@@ -1,18 +1,56 @@
 import { Router } from "express";
 import {z} from "zod";
 import prisma from "../prisma.js";
+import cloudinary from "../cloudinary.js";
+import multer from "multer";
 
 const router = Router();
 
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 }, // Limite de 5MB
+    fileFilter: (req, file, cb) => {
+        const permitidos = ["image/jpeg", "image/png", "image/webp"];
+        if (permitidos.includes(file.mimetype)) return cb(null, true);
+        cb(new Error("Formato de arquivo não suportado"));
+    }
+});
+
+function receberFoto(req, res, next) {
+    upload.single("foto_produto")(req, res, (err) => {
+        if (!err) return next();
+        if(err.code === "LIMIT_FILE_SIZE") {
+            return res.status(400).json({ error: "A imagem deve ter no máximo 5MB" });
+        }
+        return res.status(400).json({ error: err.message });
+    });
+}
+
+function sendFotoToCloudinary(buffer) {
+    return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream({ folder: "produtos", resource_type: "image" }, 
+        (error, result) => (error ? reject(error) : resolve(result)),
+        );
+        stream.end(buffer);
+    });
+}
+
+function comMiniatura(produto) {
+    const foto = produto.foto_produto;
+    const foto_miniatura = foto && foto.includes("/upload/") ? foto.replace("/upload/", "/upload/c_fill,w_150,h_150,q_auto,f_auto/")
+    : null;
+    return { ...produto, foto_miniatura };
+}   
+
 const produtoSchema = z.object({
-    codigo_produto: z.string({context: "Código do produto é obrigatório"}).trim().min(1, {context: "Código do produto é obrigatório"}),
-    descricao_produto: z.string({context: "Descrição do produto é obrigatória"}).trim().min(1, {context: "Descrição do produto é obrigatória"}),
+    codigo_produto: z.string({message: "Código do produto é obrigatório"}).trim().min(1, "Código do produto é obrigatório"),
+    descricao_produto: z.string({message: "Descrição do produto é obrigatória"}).trim().min(1, "Descrição do produto é obrigatória"),
     status: z.enum(["ativo", "inativo"], {errorMap: () => ({message: "Status do produto deve ser 'ativo' ou 'inativo'"}),}).optional(),
     foto_produto: z.string().nullable().optional(),
 });
 
 function validateProduto(schema, data, res) {
-    const result = schema.safeParse(data);
+    const result = schema.safeParse(data ?? {});
     if (!result.success) {
         const errorMessages = result.error.issues.map((issue) => ({
             field: issue.path.join("."),
@@ -35,7 +73,7 @@ function lerId(req, res) {
 
 function tratarErro(error, res) {
     if (error.code === "P2002") {
-        return res.status(409).json({ error: "Código do produto já existe" });
+        return res.status(409).json({ error: "Já existe um produto com este código" });
     }
     if (error.code === "P2025") {
         return res.status(404).json({ error: "Produto não encontrado" });
@@ -49,7 +87,7 @@ router.get("/", async (req, res) => {
     const produtos = await prisma.produto.findMany({
             orderBy: [{ status: "asc" }, { id: "asc" }],
         });
-        res.json(produtos);
+        res.json(produtos.map(comMiniatura));
     } catch (error) {
             tratarErro(error, res);
     }
@@ -66,27 +104,31 @@ router.get("/:id", async (req, res) => {
         if (!produto) {
             return res.status(404).json({ error: "Produto não encontrado" });
         }
-        res.json(produto);
+        res.json(comMiniatura(produto));
     } catch (error) {
         tratarErro(error, res);
     }
 });
 
-router.post("/", async (req, res) => {
+router.post("/", receberFoto, async (req, res) => {
     const produtoData = validateProduto(produtoSchema, req.body, res);
     if (!produtoData) return;
 
     try {
+        if (req.file) {
+            const result = await sendFotoToCloudinary(req.file.buffer);
+            produtoData.foto_produto = result.secure_url;
+        }
         const produto = await prisma.produto.create({
             data: produtoData,
         });
-        res.status(201).json(produto);
+        res.status(201).json(comMiniatura(produto));
     } catch (error) {
         tratarErro(error, res);
     }
 });
 
-router.put("/:id", async (req, res) => {
+router.put("/:id", receberFoto, async (req, res) => {
     const id = lerId(req, res);
     if (id === null) return;
 
@@ -94,11 +136,15 @@ router.put("/:id", async (req, res) => {
     if (!produtoData) return;
 
     try {
+        if (req.file) {
+            const result = await sendFotoToCloudinary(req.file.buffer);
+            produtoData.foto_produto = result.secure_url;
+        }
         const produto = await prisma.produto.update({
             where: { id },
             data: produtoData,
         });
-        res.json(produto);
+        res.json(comMiniatura(produto));
     } catch (error) {
         tratarErro(error, res);
     }
@@ -119,7 +165,7 @@ router.patch("/:id/status", async (req, res) => {
             where: { id },
             data: { status: produto.status === "ativo" ? "inativo" : "ativo" },
         });
-        res.json(updatedProduto);
+        res.json(comMiniatura(updatedProduto));
     } catch (error) {
         tratarErro(error, res);
     }
@@ -130,7 +176,7 @@ router.delete("/:id", async (req, res) => {
     if (id === null) return;
 
     try {
-        const produto = await prisma.produto.delete({
+        await prisma.produto.delete({
             where: { id },
         });
         res.status(204).send();
