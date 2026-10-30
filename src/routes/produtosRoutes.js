@@ -36,6 +36,29 @@ function sendFotoToCloudinary(buffer) {
     });
 }
 
+function extrairPublicId(url) {
+    if(!url) return null;
+    const partes = url.split("/");
+    const pasta = partes[partes.length - 2];
+    const arquivo = partes[partes.length - 1];
+    const nomeSemExtensao = arquivo.substring(0, arquivo.lastIndexOf("."));
+    return `${pasta}/${nomeSemExtensao}`;
+}
+
+async function apagarFotoDoCloudinary(url) {
+    const publicId = extrairPublicId(url);
+    if (!publicId) return;
+
+    try {
+        const resposta = await cloudinary.uploader.destroy(publicId);
+        if (resposta.result !== "ok") {
+            console.warn(`Cloudinary não apagou ${publicId}: ${resposta.result}`);
+        }
+    } catch (error) {
+        console.error("Falha ao apagar imagem do Cloudinary:", error.message);
+    }
+}
+
 function comMiniatura(produto) {
     const foto = produto.foto_produto;
     const foto_miniatura = foto && foto.includes("/upload/") ? foto.replace("/upload/", "/upload/c_fill,w_150,h_150,q_auto,f_auto/")
@@ -109,16 +132,20 @@ router.post("/", receberFoto, async (req, res) => {
     const produtoData = validar(criarProdutoSchema, req.body, res);
     if (!produtoData) return;
 
+    let fotoEnviada = null;
+
     try {
         if (req.file) {
             const result = await sendFotoToCloudinary(req.file.buffer);
-            produtoData.foto_produto = result.secure_url;
+            fotoEnviada = result.secure_url;
+            produtoData.foto_produto = fotoEnviada;
         }
         const produto = await prisma.produto.create({
             data: produtoData,
         });
         res.status(201).json(comMiniatura(produto));
     } catch (error) {
+        if (fotoEnviada) await apagarFotoDoCloudinary(fotoEnviada);
         tratarErro(error, res);
     }
 });
