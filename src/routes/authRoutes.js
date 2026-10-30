@@ -45,4 +45,34 @@ router.post("/register", async (req, res) => {
   }
 });
 
+router.post("/login", async (req, res) => {
+  const result = loginSchema.safeParse(req.body ?? {});
+  if (!result.success) {
+    const errorMessages = result.error.issues.map((issue) => ({
+        field: issue.path.join("."),
+        message: issue.message,
+    }));
+    return res.status(400).json({ errors: errorMessages });
+  }
+
+  const { email, senha } = result.data;
+
+  try {
+    const usuario = await prisma.usuario.findUnique({ where: { email } });
+    const senhaValida = usuario ? await bcrypt.compare(senha, usuario.senha) : false;
+
+    if (!usuario || !senhaValida) {
+        return res.status(401).json({ error: "Email ou senha inválidos" });
+    }
+
+    const token = jwt.sign({ id: usuario.id, email: usuario.email }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    res.json({ token,
+      usuario: { id: usuario.id, nome: usuario.nome, email: usuario.email }
+     });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
 export default router;
