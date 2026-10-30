@@ -161,17 +161,28 @@ router.put("/:id", receberFoto, async (req, res) => {
         return res.status(400).json({ error: "Nenhum dado fornecido para atualização" });
     }
 
+    let fotoNova = null;
+
     try {
+        const atual = await prisma.produto.findUnique({ where: { id } });
+        if (!atual) {
+            return res.status(404).json({ error: "Produto não encontrado" });
+        }
         if (req.file) {
             const result = await sendFotoToCloudinary(req.file.buffer);
-            produtoData.foto_produto = result.secure_url;
+            fotoNova = result.secure_url;
+            produtoData.foto_produto = fotoNova;
         }
         const produto = await prisma.produto.update({
             where: { id },
             data: produtoData,
         });
+        if (fotoNova && atual.foto_produto) {
+            await apagarFotoDoCloudinary(atual.foto_produto);
+        }
         res.json(comMiniatura(produto));
     } catch (error) {
+        if (fotoNova) await apagarFotoDoCloudinary(fotoNova);
         tratarErro(error, res);
     }
 });
