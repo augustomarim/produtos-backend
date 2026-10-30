@@ -42,12 +42,19 @@ function comMiniatura(produto) {
     return { ...produto, foto_miniatura };
 }   
 
-const produtoSchema = z.object({
-    codigo_produto: z.string({message: "Código do produto é obrigatório"}).trim().min(1, "Código do produto é obrigatório"),
-    descricao_produto: z.string({message: "Descrição do produto é obrigatória"}).trim().min(1, "Descrição do produto é obrigatória"),
-    status: z.enum(["ativo", "inativo"], {errorMap: () => ({message: "Status do produto deve ser 'ativo' ou 'inativo'"}),}).optional(),
-    foto_produto: z.string().nullable().optional(),
-});
+const camposObrigatorios = {
+    codigo_produto: z.string({ message: "Código do produto é obrigatório" }).trim().min(1, "Código do produto é obrigatório"),
+    descricao_produto: z.string({ message: "Descrição do produto é obrigatória" }).trim().min(1, "Descrição do produto é obrigatória"),
+};
+
+const criarProdutoSchema = z.object(camposObrigatorios);
+
+const atualizarProdutoSchema = z.object({
+    ...camposObrigatorios,
+    status: z.enum(["ativo", "inativo"], {
+        errorMap: () => ({ message: "Status deve ser 'ativo' ou 'inativo'" }),
+    }),
+}).partial();
 
 function validateProduto(schema, data, res) {
     const result = schema.safeParse(data ?? {});
@@ -111,7 +118,7 @@ router.get("/:id", async (req, res) => {
 });
 
 router.post("/", receberFoto, async (req, res) => {
-    const produtoData = validateProduto(produtoSchema, req.body, res);
+    const produtoData = validateProduto(criarProdutoSchema, req.body, res);
     if (!produtoData) return;
 
     try {
@@ -132,7 +139,7 @@ router.put("/:id", receberFoto, async (req, res) => {
     const id = lerId(req, res);
     if (id === null) return;
 
-    const produtoData = validateProduto(produtoSchema.partial(), req.body, res);
+    const produtoData = validateProduto(atualizarProdutoSchema, req.body, res);
     if (!produtoData) return;
 
     try {
