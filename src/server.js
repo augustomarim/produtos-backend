@@ -1,11 +1,9 @@
-import dotenv from "dotenv";
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import produtosRoutes from "./routes/produtosRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import auth from "./middlewares/auth.js";
-
-dotenv.config();
 
 const app = express();
 app.use(cors());
