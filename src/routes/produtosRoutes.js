@@ -3,6 +3,7 @@ import {z} from "zod";
 import prisma from "../prisma.js";
 import cloudinary from "../cloudinary.js";
 import multer from "multer";
+import { validar } from "../validacao.js";
 
 const router = Router();
 
@@ -56,19 +57,6 @@ const atualizarProdutoSchema = z.object({
     }),
 }).partial();
 
-function validateProduto(schema, data, res) {
-    const result = schema.safeParse(data ?? {});
-    if (!result.success) {
-        const errorMessages = result.error.issues.map((issue) => ({
-            field: issue.path.join("."),
-            message: issue.message,
-        }));
-        res.status(400).json({errorMessages});
-        return null;
-    }
-    return result.data;
-}
-
 function lerId(req, res) {
     const id = Number(req.params.id);
     if(!Number.isInteger(id)){
@@ -118,7 +106,7 @@ router.get("/:id", async (req, res) => {
 });
 
 router.post("/", receberFoto, async (req, res) => {
-    const produtoData = validateProduto(criarProdutoSchema, req.body, res);
+    const produtoData = validar(criarProdutoSchema, req.body, res);
     if (!produtoData) return;
 
     try {
@@ -139,7 +127,7 @@ router.put("/:id", receberFoto, async (req, res) => {
     const id = lerId(req, res);
     if (id === null) return;
 
-    const produtoData = validateProduto(atualizarProdutoSchema, req.body, res);
+    const produtoData = validar(atualizarProdutoSchema, req.body, res);
     if (!produtoData) return;
 
     try {
