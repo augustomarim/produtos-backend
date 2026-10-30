@@ -59,7 +59,7 @@ const atualizarProdutoSchema = z.object({
 
 function lerId(req, res) {
     const id = Number(req.params.id);
-    if(!Number.isInteger(id)){
+    if(!Number.isInteger(id) || id < 1 || id > 2147483647) {
         res.status(400).json({error: "ID inválido"});
         return null;
     }
@@ -129,6 +129,10 @@ router.put("/:id", receberFoto, async (req, res) => {
 
     const produtoData = validar(atualizarProdutoSchema, req.body, res);
     if (!produtoData) return;
+
+    if (Object.keys(produtoData).length === 0 && !req.file) {
+        return res.status(400).json({ error: "Nenhum dado fornecido para atualização" });
+    }
 
     try {
         if (req.file) {
