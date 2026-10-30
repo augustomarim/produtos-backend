@@ -225,4 +225,29 @@ router.delete("/:id", async (req, res) => {
     }
 });
 
+router.delete("/:id/foto", async (req, res) => {
+    const id = lerId(req, res);
+    if (id === null) return;
+
+    try {
+        const atual = await prisma.produto.findUnique({ where: { id } });
+        if (!atual) {
+            return res.status(404).json({ error: "Produto não encontrado" });
+        }
+        if (!atual.foto_produto) {
+            return res.json(comMiniatura(atual));
+        }
+
+        const produto = await prisma.produto.update({
+            where: { id },
+            data: { foto_produto: null },
+        });
+        await apagarFotoDoCloudinary(atual.foto_produto);
+        res.json(comMiniatura(produto));
+        
+    } catch (error) {
+        tratarErro(error, res);
+    }
+});
+
 export default router;
