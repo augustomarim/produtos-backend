@@ -5,6 +5,20 @@ import produtosRoutes from "./routes/produtosRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import auth from "./middlewares/auth.js";
 
+const variaveisObrigatorias = [
+  "DATABASE_URL", 
+  "JWT_SECRET",
+  "CLOUDINARY_CLOUD_NAME",
+  "CLOUDINARY_API_KEY",
+  "CLOUDINARY_API_SECRET"
+];
+
+const variaveisFaltando = variaveisObrigatorias.filter((variavel) => !process.env[variavel]);
+if (variaveisFaltando.length > 0) {
+  console.error(`Erro: As seguintes variáveis de ambiente são obrigatórias e não foram definidas: ${variaveisFaltando.join(", ")}`);
+  process.exit(1);
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json());
