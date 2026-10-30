@@ -213,9 +213,12 @@ router.delete("/:id", async (req, res) => {
     if (id === null) return;
 
     try {
-        await prisma.produto.delete({
+        const removido = await prisma.produto.delete({
             where: { id },
         });
+        if (removido.foto_produto) {
+            await apagarFotoDoCloudinary(removido.foto_produto);
+        }
         res.status(204).send();
     } catch (error) {
         tratarErro(error, res);
