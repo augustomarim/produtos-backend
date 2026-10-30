@@ -3,6 +3,7 @@ import { z } from "zod";
 import prisma from "../prisma.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { validar } from "../validacao.js";
 
 const router = Router();
 
@@ -14,20 +15,14 @@ const registerSchema = z.object({
 
 const loginSchema = z.object({
   email: z.string({ message: "Email é obrigatório" }).trim().toLowerCase().email("Email inválido"),
-  senha: z.string({ message: "Senha é obrigatória" }).min(6, "Senha deve ter pelo menos 6 caracteres"),
+  senha: z.string({ message: "Senha é obrigatória" }).min(1, "Senha é obrigatória"),
 });
 
 router.post("/register", async (req, res) => {
-  const result = registerSchema.safeParse(req.body ?? {});
-  if (!result.success) {
-    const errorMessages = result.error.issues.map((issue) => ({
-        field: issue.path.join("."),
-        message: issue.message,
-    }));
-    return res.status(400).json({ errors: errorMessages });
-  }
+  const dados = validar(registerSchema, req.body, res);
+  if (!dados) return;
 
-  const { nome, email, senha } = result.data;
+  const { nome, email, senha } = dados;
 
   try {
     const senhaHash = await bcrypt.hash(senha, 10);
@@ -38,7 +33,7 @@ router.post("/register", async (req, res) => {
     res.status(201).json(usuario);
   } catch (error) {
     if (error.code === "P2002") {
-        return res.status(400).json({ error: "Email já está em uso" });
+        return res.status(409).json({ error: "Email já está em uso" });
     }
     console.error(error);
     res.status(500).json({ error: "Erro interno do servidor" });
@@ -46,16 +41,9 @@ router.post("/register", async (req, res) => {
 });
 
 router.post("/login", async (req, res) => {
-  const result = loginSchema.safeParse(req.body ?? {});
-  if (!result.success) {
-    const errorMessages = result.error.issues.map((issue) => ({
-        field: issue.path.join("."),
-        message: issue.message,
-    }));
-    return res.status(400).json({ errors: errorMessages });
-  }
-
-  const { email, senha } = result.data;
+  const dados = validar(loginSchema, req.body, res);
+  if (!dados) return;
+  const { email, senha } = dados;
 
   try {
     const usuario = await prisma.usuario.findUnique({ where: { email } });
