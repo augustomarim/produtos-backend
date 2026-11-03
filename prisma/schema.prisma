@@ -19,20 +19,35 @@ enum StatusProduto {
 }
 
 model Usuario {
-  id Int @id @default(autoincrement())
-  nome String
-  email String @unique
-  senha String
+  id            Int            @id @default(autoincrement())
+  nome          String
+  email         String         @unique
+  senha         String
+  refreshTokens RefreshToken[]
 
   @@map("usuarios")
 }
 
 model Produto {
-  id Int @id @default(autoincrement())
-  codigo_produto String @unique
+  id                Int           @id @default(autoincrement())
+  codigo_produto    String        @unique
   descricao_produto String
-  status StatusProduto @default(ativo)
-  foto_produto String?
+  status            StatusProduto @default(ativo)
+  foto_produto      String?
 
   @@map("produtos")
+}
+
+model RefreshToken {
+  id        Int       @id @default(autoincrement())
+  tokenHash String    @unique
+  usuarioId Int
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@index([usuarioId])
+  @@map("refresh_tokens")
 }

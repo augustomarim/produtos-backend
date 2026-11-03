@@ -2,7 +2,11 @@ import { Router } from "express";
 import { z } from "zod";
 import prisma from "../prisma.js";
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
+import {
+  gerarAccessToken,
+  criarRefreshToken,
+  calcularHash,
+} from "../services/tokens.js";
 import { validar } from "../validacao.js";
 
 const router = Router();
@@ -53,13 +57,124 @@ router.post("/login", async (req, res) => {
         return res.status(401).json({ error: "Email ou senha inválidos" });
     }
 
-    const token = jwt.sign({ id: usuario.id, email: usuario.email }, process.env.JWT_SECRET, { expiresIn: "1h" });
-    res.json({ token,
-      usuario: { id: usuario.id, nome: usuario.nome, email: usuario.email }
-     });
+    const token = gerarAccessToken(usuario);
+
+    const refresh = await criarRefreshToken(usuario.id);
+
+    res.json({
+    token,
+    refreshToken: refresh.token,
+    refreshTokenExpiresAt: refresh.expiresAt,
+    usuario: {
+      id: usuario.id,
+      nome: usuario.nome,
+      email: usuario.email,
+      },
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+const refreshSchema = z.object({
+  refreshToken: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
+router.post("/refresh", async (req, res) => {
+  const dados = validar(refreshSchema, req.body, res);
+  if (!dados) return;
+
+  try {
+    const resultado = await prisma.$transaction(async (tx) => {
+      const agora = new Date();
+
+      const registro = await tx.refreshToken.findUnique({
+        where: {
+          tokenHash: calcularHash(dados.refreshToken),
+        },
+        include: {
+          usuario: true,
+        },
+      });
+
+      if (
+        !registro ||
+        registro.revokedAt ||
+        registro.expiresAt <= agora
+      ) {
+        return null;
+      }
+
+      // Só uma requisição pode consumir este token.
+      const revogacao = await tx.refreshToken.updateMany({
+        where: {
+          id: registro.id,
+          revokedAt: null,
+          expiresAt: { gt: agora },
+        },
+        data: {
+          revokedAt: agora,
+        },
+      });
+
+      if (revogacao.count !== 1) {
+        return null;
+      }
+
+      const refresh = await criarRefreshToken(
+        registro.usuarioId,
+        tx,
+      );
+
+      return {
+        token: gerarAccessToken(registro.usuario),
+        refreshToken: refresh.token,
+        refreshTokenExpiresAt: refresh.expiresAt,
+      };
+    });
+
+    if (!resultado) {
+      return res.status(401).json({
+        error: "Refresh token inválido ou expirado",
+      });
+    }
+
+    return res.json(resultado);
+  } catch (error) {
+    console.error("Falha ao renovar sessão:", error.code || error.name);
+
+    return res.status(500).json({
+      error: "Erro interno do servidor",
+    });
+  }
+});
+
+router.post("/logout", async (req, res) => {
+  const dados = validar(refreshSchema, req.body, res);
+  if (!dados) return;
+
+  try {
+    await prisma.refreshToken.updateMany({
+      where: {
+        tokenHash: calcularHash(dados.refreshToken),
+        revokedAt: null,
+      },
+      data: {
+        revokedAt: new Date(),
+      },
+    });
+
+    return res.status(204).send();
+  } catch (error) {
+    console.error(
+      "Falha ao encerrar sessão:",
+      error.code || error.name,
+    );
+
+    return res.status(500).json({
+      error: "Erro interno do servidor",
+    });
   }
 });
 
