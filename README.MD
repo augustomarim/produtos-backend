@@ -280,6 +280,21 @@ as restrições de sua hospedagem.
 | 409 | Email ou código de produto duplicado |
 | 500 | Erro interno |
 
+## Testes automatizados
+
+Com Node.js 24 LTS:
+
+```bash
+npm test
+```
+
+Os testes executam as rotas reais de autenticação via HTTP local,
+com banco simulado. Cobrem login, validade dos tokens, rotação,
+reutilização, expiração, logout, erros e rollback simulado.
+Não substituem testes de integração no PostgreSQL/Neon. A concorrência
+é simulada com transações serializadas; bloqueios reais do PostgreSQL
+não são verificados por essa suíte. Nenhum dado é gravado no Neon.
+
 ## Validação manual
 
 Use Postman ou Thunder Client para testar:
