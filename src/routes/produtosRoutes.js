@@ -104,6 +104,7 @@ router.get("/", async (req, res) => {
     try {
     const produtos = await prisma.produto.findMany({
             orderBy: [
+                { status: "asc" },
                 { updatedAt: { sort: "desc", nulls: "last" } },
                 { id: "desc" },
             ],

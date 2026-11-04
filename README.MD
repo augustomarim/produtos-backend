@@ -337,8 +337,8 @@ O web e o aplicativo mobile utilizam a mesma API.
 ## Histórico e ordenação dos produtos
 
 A API retorna `createdAt` (criação) e `updatedAt` (última alteração).
-A listagem prioriza a última alteração em ordem decrescente, com desempate
-por ID decrescente. Edição, mudança de status e alterações de foto atualizam
+A listagem mantém ativos antes de inativos. Dentro de cada grupo, prioriza
+a última alteração em ordem decrescente, com desempate por ID decrescente. Edição, mudança de status e alterações de foto atualizam
 `updatedAt` pelo Prisma.
 
 A migração `20261103210000_product_dates` acrescenta as colunas sem apagar
