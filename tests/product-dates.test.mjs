@@ -22,17 +22,18 @@ test('migração de datas preserva produtos antigos e ordena alterações recent
     const novo = (await db.query(`SELECT * FROM produtos WHERE codigo_produto = 'NOVO'`)).rows[0];
     assert.ok(novo.createdAt instanceof Date);
     assert.ok(novo.updatedAt instanceof Date);
-    let ordem = (await db.query(`SELECT codigo_produto FROM produtos ORDER BY "updatedAt" DESC NULLS LAST, id DESC`)).rows;
-    assert.deepEqual(ordem.map(p => p.codigo_produto), ['NOVO','ANTIGO']);
+    await db.query(`INSERT INTO produtos (codigo_produto, descricao_produto, status, "updatedAt") VALUES ('INATIVO','Inativo recente','inativo',$1)`, [new Date(Date.now() + 30_000)]);
+    let ordem = (await db.query(`SELECT codigo_produto FROM produtos ORDER BY status ASC, "updatedAt" DESC NULLS LAST, id DESC`)).rows;
+    assert.deepEqual(ordem.map(p => p.codigo_produto), ['NOVO','ANTIGO','INATIVO']);
 
     // Prisma @updatedAt writes this value on every successful update.
     const alteracao = new Date(Date.now() + 60_000);
     await db.query(`UPDATE produtos SET descricao_produto = 'Editado', "updatedAt" = $1 WHERE codigo_produto = 'ANTIGO'`, [alteracao]);
-    ordem = (await db.query(`SELECT codigo_produto FROM produtos ORDER BY "updatedAt" DESC NULLS LAST, id DESC`)).rows;
-    assert.deepEqual(ordem.map(p => p.codigo_produto), ['ANTIGO','NOVO']);
+    ordem = (await db.query(`SELECT codigo_produto FROM produtos ORDER BY status ASC, "updatedAt" DESC NULLS LAST, id DESC`)).rows;
+    assert.deepEqual(ordem.map(p => p.codigo_produto), ['ANTIGO','NOVO','INATIVO']);
     const editado = (await db.query(`SELECT * FROM produtos WHERE codigo_produto = 'ANTIGO'`)).rows[0];
     assert.equal(editado.createdAt, null);
     assert.equal(editado.updatedAt.getTime(), alteracao.getTime());
-    assert.equal((await db.query(`SELECT count(*)::int AS n FROM produtos`)).rows[0].n, 2);
+    assert.equal((await db.query(`SELECT count(*)::int AS n FROM produtos`)).rows[0].n, 3);
   } finally { await db.close(); }
 });
