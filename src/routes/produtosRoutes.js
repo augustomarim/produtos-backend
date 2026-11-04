@@ -103,7 +103,10 @@ function tratarErro(error, res) {
 router.get("/", async (req, res) => {
     try {
     const produtos = await prisma.produto.findMany({
-            orderBy: [{ status: "asc" }, { id: "asc" }],
+            orderBy: [
+                { updatedAt: { sort: "desc", nulls: "last" } },
+                { id: "desc" },
+            ],
         });
         res.json(produtos.map(comMiniatura));
     } catch (error) {

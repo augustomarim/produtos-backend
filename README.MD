@@ -333,3 +333,30 @@ Frontend web:
 https://github.com/augustomarim/produtos-web
 
 O web e o aplicativo mobile utilizam a mesma API.
+
+## Histórico e ordenação dos produtos
+
+A API retorna `createdAt` (criação) e `updatedAt` (última alteração).
+A listagem prioriza a última alteração em ordem decrescente, com desempate
+por ID decrescente. Edição, mudança de status e alterações de foto atualizam
+`updatedAt` pelo Prisma.
+
+A migração `20261103210000_product_dates` acrescenta as colunas sem apagar
+produtos. As datas de registros anteriores ficam nulas, pois não existia
+histórico para recuperar. Produtos novos recebem as duas datas; uma alteração
+em um produto antigo passa a registrar sua data de atualização.
+
+### Aplicar esta atualização no Render
+
+Antes de integrar a branch, configure o Build Command do serviço como:
+
+```bash
+npm ci && npx prisma migrate deploy
+```
+
+Mantenha o Start Command como `npm start`. A migração deve ser aplicada
+antes de iniciar o backend atualizado. Não use `prisma migrate reset`.
+Publique o backend antes do frontend que exibe essas datas.
+
+Os testes de migração usam PostgreSQL embarcado (PGlite) somente como
+ferramenta de desenvolvimento. Ele não substitui o Neon nem é usado pela API.

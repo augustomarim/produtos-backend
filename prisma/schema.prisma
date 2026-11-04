@@ -34,7 +34,10 @@ model Produto {
   descricao_produto String
   status            StatusProduto @default(ativo)
   foto_produto      String?
+  createdAt         DateTime?     @default(now())
+  updatedAt         DateTime?     @default(now()) @updatedAt
 
+  @@index([updatedAt(sort: Desc), id(sort: Desc)])
   @@map("produtos")
 }
 
