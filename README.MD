@@ -360,3 +360,57 @@ Publique o backend antes do frontend que exibe essas datas.
 
 Os testes de migração usam PostgreSQL embarcado (PGlite) somente como
 ferramenta de desenvolvimento. Ele não substitui o Neon nem é usado pela API.
+
+
+## Ações em lote (até 100 produtos)
+
+As duas rotas exigem `Authorization: Bearer SEU_ACCESS_TOKEN` e JSON.
+IDs devem ser inteiros positivos de até 2147483647. A lista deve ter entre
+1 e 100 posições; IDs repetidos são deduplicados depois da validação.
+IDs que não existem são ignorados e informados pela diferença de contagens.
+
+### Definir status
+
+```text
+PATCH /produtos/status
+```
+
+```json
+{ "ids": [3, 7, 12], "status": "inativo" }
+```
+
+O status é explícito: todos os encontrados ficam `inativo` (ou `ativo`),
+independentemente do estado anterior. A alteração é um único comando SQL
+com `updateManyAndReturn`, retornando `{ solicitados, afetados, produtos }`.
+Os produtos incluem `updatedAt` e `foto_miniatura`, permitindo atualizar a
+lista sem outra consulta. Uma repetição não inverte o status.
+
+### Excluir seleção
+
+```text
+DELETE /produtos
+```
+
+```json
+{ "ids": [3, 7, 12] }
+```
+
+Retorna `{ solicitados, afetados, idsExcluidos, fotosNaoRemovidas }`.
+Uma transação bloqueia as linhas selecionadas, captura suas fotos e executa
+`deleteMany`. Uma falha de banco desfaz a exclusão, sem apagar fotos.
+As fotos são removidas após o commit, em grupos de até cinco requisições.
+Banco e Cloudinary não compartilham transação: falhas nas fotos não desfazem
+uma exclusão já confirmada e são sinalizadas por `fotosNaoRemovidas`.
+O cliente deve informar esse resultado, sem repetir a exclusão automaticamente.
+
+### Testes do lote
+
+`npm ci` gera o Prisma Client; `npm test` executa as rotas reais com esse
+cliente e PostgreSQL embarcado via PGlite/socket, sem acessar o Neon.
+Cloudinary é simulado para testar sucesso/falha da limpeza. A suíte verifica
+`updatedAt`, autenticação, deduplicação, IDs ausentes, limite de 100 e rollback.
+O banco de testes usa uma conexão local e não substitui testes de carga ou
+concorrência em um PostgreSQL de produção.
+
+Esta funcionalidade não acrescenta migrações. Integre e publique primeiro
+o backend e, depois, o web com checkboxes.

@@ -47,15 +47,16 @@ function extrairPublicId(url) {
 
 async function apagarFotoDoCloudinary(url) {
     const publicId = extrairPublicId(url);
-    if (!publicId) return;
+    if (!publicId) return true;
 
     try {
         const resposta = await cloudinary.uploader.destroy(publicId);
-        if (resposta.result !== "ok") {
-            console.warn(`Cloudinary não apagou ${publicId}: ${resposta.result}`);
-        }
+        const removida = resposta.result === "ok" || resposta.result === "not found";
+        if (!removida) console.warn("Cloudinary não removeu uma foto associada ao produto.");
+        return removida;
     } catch (error) {
-        console.error("Falha ao apagar imagem do Cloudinary:", error.message);
+        console.error("Falha ao apagar imagem do Cloudinary:", error.code || error.name);
+        return false;
     }
 }
 
@@ -80,8 +81,16 @@ const atualizarProdutoSchema = z.object({
     }),
 }).partial();
 
-const idsSchema = z.array(z.number({ message: "ID inválido" }).int().positive().max(2147483647, "ID inválido"),{ message: "Envie a lista de IDs"},)
-.min(1, "Selecione pelo menos um produto").max(100, "Selecione no máximo 100 produtos").transform((ids) => [...new Set(ids)]);
+const idsSchema = z.array(
+    z.number({ message: "ID inválido" })
+        .int("ID inválido").positive("ID inválido")
+        .max(2147483647, "ID inválido"),
+    { message: "Envie a lista de IDs" },
+).min(1, "Selecione pelo menos um produto")
+ .max(100, "Selecione no máximo 100 produtos por vez")
+ .transform((ids) => [...new Set(ids)]);
+
+const excluirLoteSchema = z.object({ ids: idsSchema });
 
 const statusLoteSchema = z.object({
     ids: idsSchema,
@@ -206,7 +215,7 @@ router.patch("/status", async (req, res) => {
     if (!dados) return;
 
     try {
-        const produtos = await prima.produto.updateManyAndReturn({
+        const produtos = await prisma.produto.updateManyAndReturn({
             where: { id: { in: dados.ids } },
             data: { status: dados.status },
         });
@@ -236,6 +245,50 @@ router.patch("/:id/status", async (req, res) => {
             data: { status: produto.status === "ativo" ? "inativo" : "ativo" },
         });
         res.json(comMiniatura(updatedProduto));
+    } catch (error) {
+        tratarErro(error, res);
+    }
+});
+
+router.delete("/", async (req, res) => {
+    const dados = validar(excluirLoteSchema, req.body, res);
+    if (!dados) return;
+    try {
+        const excluidos = await prisma.$transaction(async (tx) => {
+            // Lock the selected rows before capturing their photos. This avoids
+            // racing a photo replacement between the read and the delete.
+            // The tagged query binds the ID array as a parameter, never SQL text.
+            const produtos = await tx.$queryRaw`
+                SELECT "id", "foto_produto" FROM "produtos"
+                WHERE "id" = ANY(${dados.ids}::int[])
+                ORDER BY "id" FOR UPDATE
+            `;
+            if (produtos.length) {
+                await tx.produto.deleteMany({
+                    where: { id: { in: produtos.map(p => p.id) } },
+                });
+            }
+            return produtos;
+        });
+
+        // External storage cannot participate in the database transaction.
+        // Delete photos only after commit, in batches of at most five requests.
+        const fotos = [...new Set(excluidos.map(p => p.foto_produto).filter(Boolean))];
+        let fotosNaoRemovidas = 0;
+        for (let i = 0; i < fotos.length; i += 5) {
+            const resultados = await Promise.allSettled(
+                fotos.slice(i, i + 5).map(apagarFotoDoCloudinary),
+            );
+            fotosNaoRemovidas += resultados.filter(
+                r => r.status === "rejected" || r.value === false,
+            ).length;
+        }
+        res.json({
+            solicitados: dados.ids.length,
+            afetados: excluidos.length,
+            idsExcluidos: excluidos.map(p => p.id),
+            fotosNaoRemovidas,
+        });
     } catch (error) {
         tratarErro(error, res);
     }
