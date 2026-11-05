@@ -80,6 +80,16 @@ const atualizarProdutoSchema = z.object({
     }),
 }).partial();
 
+const idsSchema = z.array(z.number({ message: "ID inválido" }).int().positive().max(2147483647, "ID inválido"),{ message: "Envie a lista de IDs"},)
+.min(1, "Selecione pelo menos um produto").max(100, "Selecione no máximo 100 produtos").transform((ids) => [...new Set(ids)]);
+
+const statusLoteSchema = z.object({
+    ids: idsSchema,
+    status: z.enum(["ativo", "inativo"], {
+        errorMap: () => ({ message: "Status deve ser 'ativo' ou 'inativo'" }),
+    }),
+});
+
 function lerId(req, res) {
     const id = Number(req.params.id);
     if(!Number.isInteger(id) || id < 1 || id > 2147483647) {
@@ -187,6 +197,25 @@ router.put("/:id", receberFoto, async (req, res) => {
         res.json(comMiniatura(produto));
     } catch (error) {
         if (fotoNova) await apagarFotoDoCloudinary(fotoNova);
+        tratarErro(error, res);
+    }
+});
+
+router.patch("/status", async (req, res) => {
+    const dados = validar(statusLoteSchema, req.body, res);
+    if (!dados) return;
+
+    try {
+        const produtos = await prima.produto.updateManyAndReturn({
+            where: { id: { in: dados.ids } },
+            data: { status: dados.status },
+        });
+        res.json({
+            solicitados: dados.ids.length,
+            afetados: produtos.length,
+            produtos: produtos.map(comMiniatura),
+        });
+    } catch (error) {
         tratarErro(error, res);
     }
 });
