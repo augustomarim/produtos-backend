@@ -4,6 +4,7 @@ import prisma from "../prisma.js";
 import cloudinary from "../cloudinary.js";
 import multer from "multer";
 import { validar } from "../validacao.js";
+import { consultaProdutosSchema, consultarProdutosPaginados } from "../consultarProdutos.js";
 
 const router = Router();
 
@@ -120,7 +121,14 @@ function tratarErro(error, res) {
 }
 
 router.get("/", async (req, res) => {
+    const paginada = ["pagina", "limite", "busca", "status", "ordem"].some(campo => req.query[campo] !== undefined);
+    const consulta = paginada ? validar(consultaProdutosSchema, req.query, res) : null;
+    if (paginada && !consulta) return;
     try {
+    if (paginada) {
+        const resultado = await consultarProdutosPaginados(prisma, consulta);
+        return res.json({ ...resultado, produtos: resultado.produtos.map(comMiniatura) });
+    }
     const produtos = await prisma.produto.findMany({
             orderBy: [
                 { status: "asc" },
@@ -215,14 +223,28 @@ router.patch("/status", async (req, res) => {
     if (!dados) return;
 
     try {
-        const produtos = await prisma.produto.updateManyAndReturn({
-            where: { id: { in: dados.ids } },
-            data: { status: dados.status },
+        const resultado = await prisma.$transaction(async tx => {
+            const existentes = await tx.$queryRaw`
+                SELECT * FROM "produtos" WHERE "id" = ANY(${dados.ids}::int[])
+                ORDER BY "id" FOR UPDATE
+            `;
+            const idsAlterar = existentes.filter(p => p.status !== dados.status).map(p => p.id);
+            const atualizados = idsAlterar.length ? await tx.produto.updateManyAndReturn({
+                where: { id: { in: idsAlterar } },
+                data: { status: dados.status },
+            }) : [];
+            const mapa = new Map(atualizados.map(p => [p.id, p]));
+            return {
+                afetados: atualizados.length,
+                jaNoStatus: existentes.length - atualizados.length,
+                naoEncontrados: dados.ids.length - existentes.length,
+                produtos: existentes.map(p => mapa.get(p.id) || p),
+            };
         });
         res.json({
             solicitados: dados.ids.length,
-            afetados: produtos.length,
-            produtos: produtos.map(comMiniatura),
+            ...resultado,
+            produtos: resultado.produtos.map(comMiniatura),
         });
     } catch (error) {
         tratarErro(error, res);
