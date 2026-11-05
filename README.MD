@@ -348,6 +348,10 @@ em um produto antigo passa a registrar sua data de atualização.
 
 ### Aplicar esta atualização no Render
 
+Para a migração de produtos por usuário, siga também a seção **Produtos privados
+por conta — migração obrigatória**, que exige interromper o backend antigo
+durante a troca e descreve a limpeza autorizada dos dados sem autoria.
+
 Antes de integrar a branch, configure o Build Command do serviço como:
 
 ```bash
@@ -428,3 +432,57 @@ sempre vêm antes dos inativos. O limite aceito é de 1 a 100; página inexisten
 é ajustada à última. Contagens e página usam a mesma transação RepeatableRead.
 Sem parâmetros de consulta reconhecidos, a resposta permanece um array para
 compatibilidade. Nenhuma migração adicional é necessária.
+
+## Produtos privados por conta — migração obrigatória
+
+`Produto.usuarioId` é obrigatório e referencia `Usuario`. O dono vem
+exclusivamente do JWT validado; nunca do JSON, formulário ou query string.
+Todas as consultas (incluindo contagens e o array legado), alterações,
+exclusões, fotos e ações em lote incluem esse dono. ID inexistente e ID de
+outro usuário retornam o mesmo 404. Nos lotes, IDs alheios são tratados como
+não encontrados e não têm dados, datas ou fotos modificados/revelados.
+O código agora é único por usuário: duas contas podem usar o mesmo código.
+Não existe rota para transferir produtos entre contas.
+
+### Efeito sobre os dados existentes
+
+A migração `20261105180000_produtos_por_usuario` adiciona a autoria, remove
+produtos sem dono e impõe NOT NULL, chave estrangeira e unicidade composta.
+Como o schema anterior não registrava autoria, **todos os produtos anteriores
+à migração serão apagados**. Essa limpeza foi autorizada pelo responsável
+pelo projeto; não há tentativa de atribuir o catálogo compartilhado a alguém.
+Usuários, senhas e refresh tokens são preservados. Novos produtos já nascem
+com dono. A chave estrangeira impede novos produtos órfãos e bloqueia excluir
+um usuário que ainda possua produtos.
+
+A limpeza é de registros no PostgreSQL. Arquivos antigos no Cloudinary não
+são apagados por essa migração SQL. As imagens continuam com URLs públicas;
+a autorização protege consulta e modificação pela API, não uma URL pública
+já conhecida.
+
+### Implantação
+
+Faça a troca em uma janela de manutenção: interrompa o acesso ao backend
+antigo antes de aplicar a migração, mantendo-o indisponível até iniciar a
+nova versão. Não mantenha instâncias antigas e novas atendendo em paralelo:
+o código antigo não conhece o filtro de autoria.
+
+Na versão nova, com as variáveis do Render configuradas:
+
+```bash
+npm ci
+npx prisma migrate deploy
+npm start
+```
+
+No Render, mantenha o Start Command como `npm start`; use o comando de
+migração na etapa de implantação, respeitando a interrupção do serviço
+anterior. O comando precisa usar a DATABASE_URL do Neon já configurada no
+serviço. Não execute `migrate reset`, não altere migrações antigas e não
+volte ao backend antigo após aplicar esta migração. Depois do backend
+atualizado, integre e publique o web com limpeza de sessão por conta.
+
+Os testes locais usam Prisma real/PGlite e duas contas para verificar códigos
+iguais, contagens, busca, todos os endpoints por ID, envio/substituição/remoção
+de fotos, lotes mistos e tentativas de forjar autoria. Testam também a migração
+com dados antigos e a preservação de usuários/sessões; não alteram o Neon.
