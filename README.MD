@@ -380,8 +380,10 @@ PATCH /produtos/status
 ```
 
 O status é explícito: todos os encontrados ficam `inativo` (ou `ativo`),
-independentemente do estado anterior. A alteração é um único comando SQL
-com `updateManyAndReturn`, retornando `{ solicitados, afetados, produtos }`.
+sem regravar quem já estava nesse estado. Uma transação bloqueia as linhas e
+atualiza somente os necessários com `updateManyAndReturn`. Retorna
+`{ solicitados, afetados, jaNoStatus, naoEncontrados, produtos }`.
+`afetados` conta alterações reais; `jaNoStatus` mantém a data anterior.
 Os produtos incluem `updatedAt` e `foto_miniatura`, permitindo atualizar a
 lista sem outra consulta. Uma repetição não inverte o status.
 
@@ -414,3 +416,15 @@ concorrência em um PostgreSQL de produção.
 
 Esta funcionalidade não acrescenta migrações. Integre e publique primeiro
 o backend e, depois, o web com checkboxes.
+
+## Consulta paginada
+
+`GET /produtos?pagina=1&limite=25&busca=cafe&status=todos&ordem=atualizados`
+retorna `{ produtos, total, pagina, paginas, limite, resumo }`. `total` é a
+quantidade filtrada; `resumo` contém total, ativos e inativos do catálogo.
+Busca apenas pela descrição, sem distinguir maiúsculas e acentos portugueses.
+`status`: todos/ativo/inativo; `ordem`: atualizados/criados/codigo. Ativos
+sempre vêm antes dos inativos. O limite aceito é de 1 a 100; página inexistente
+é ajustada à última. Contagens e página usam a mesma transação RepeatableRead.
+Sem parâmetros de consulta reconhecidos, a resposta permanece um array para
+compatibilidade. Nenhuma migração adicional é necessária.
