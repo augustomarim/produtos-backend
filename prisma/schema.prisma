@@ -24,20 +24,25 @@ model Usuario {
   email         String         @unique
   senha         String
   refreshTokens RefreshToken[]
+  produtos      Produto[]
 
   @@map("usuarios")
 }
 
 model Produto {
   id                Int           @id @default(autoincrement())
-  codigo_produto    String        @unique
+  codigo_produto    String
   descricao_produto String
   status            StatusProduto @default(ativo)
   foto_produto      String?
   createdAt         DateTime?     @default(now())
   updatedAt         DateTime?     @default(now()) @updatedAt
 
-  @@index([updatedAt(sort: Desc), id(sort: Desc)])
+  usuarioId         Int
+  usuario           Usuario       @relation(fields: [usuarioId], references: [id], onDelete: Restrict)
+
+  @@unique([usuarioId, codigo_produto])
+  @@index([usuarioId, status, updatedAt(sort: Desc), id(sort: Desc)])
   @@map("produtos")
 }
 
