@@ -1,5 +1,10 @@
 import "dotenv/config";
 import express from "express";
+import { createServer } from "node:http";
+import {
+  iniciarTempoReal,
+  publicarAposResposta,
+} from "./services/tempoReal.js";
 import cors from "cors";
 import produtosRoutes from "./routes/produtosRoutes.js";
 import notificacoesRoutes from "./routes/notificacoesRoutes.js";
@@ -7,23 +12,27 @@ import authRoutes from "./routes/authRoutes.js";
 import auth from "./middlewares/auth.js";
 
 const variaveisObrigatorias = [
-  "DATABASE_URL", 
+  "DATABASE_URL",
   "JWT_SECRET",
   "CLOUDINARY_CLOUD_NAME",
   "CLOUDINARY_API_KEY",
-  "CLOUDINARY_API_SECRET"
+  "CLOUDINARY_API_SECRET",
 ];
 
-const variaveisFaltando = variaveisObrigatorias.filter((variavel) => !process.env[variavel]);
+const variaveisFaltando = variaveisObrigatorias.filter(
+  (variavel) => !process.env[variavel],
+);
 if (variaveisFaltando.length > 0) {
-  console.error(`Erro: As seguintes variáveis de ambiente são obrigatórias e não foram definidas: ${variaveisFaltando.join(", ")}`);
+  console.error(
+    `Erro: As seguintes variáveis de ambiente são obrigatórias e não foram definidas: ${variaveisFaltando.join(", ")}`,
+  );
   process.exit(1);
 }
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use("/produtos", auth, produtosRoutes);
+app.use("/produtos", auth, publicarAposResposta, produtosRoutes);
 app.use("/notificacoes", auth, notificacoesRoutes);
 app.use("/auth", authRoutes);
 app.get("/health", (req, res) => {
@@ -41,6 +50,8 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = createServer(app);
+iniciarTempoReal(server);
+server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });

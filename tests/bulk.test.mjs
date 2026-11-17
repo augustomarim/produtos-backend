@@ -11,6 +11,7 @@ import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 
 // Real Prisma + isolated PostgreSQL protocol. No Neon or external credentials.
 const db = new PGlite();
+let socketServer;
 let prisma,
   pgServer,
   httpServer,
@@ -116,20 +117,24 @@ before(async () => {
   });
   const { default: routes } = await import("../src/routes/produtosRoutes.js");
   const { default: auth } = await import("../src/middlewares/auth.js");
+  const { publicarAposResposta, iniciarTempoReal } =
+    await import("../src/services/tempoReal.js");
   const app = express();
   app.use(express.json());
-  app.use("/produtos", auth, routes);
+  app.use("/produtos", auth, publicarAposResposta, routes);
   const { default: notificacoes } =
     await import("../src/routes/notificacoesRoutes.js");
   app.use("/notificacoes", auth, notificacoes);
   httpServer = app.listen(0, "127.0.0.1");
+  socketServer = iniciarTempoReal(httpServer);
   await once(httpServer, "listening");
   base = `http://127.0.0.1:${httpServer.address().port}`;
   bearer = jwt.sign({ id: 1 }, process.env.JWT_SECRET);
   outroBearer = jwt.sign({ id: 2 }, process.env.JWT_SECRET);
 });
 after(async () => {
-  if (httpServer) await new Promise((r) => httpServer.close(r));
+  if (socketServer) await socketServer.close();
+  if (httpServer?.listening) await new Promise((r) => httpServer.close(r));
   if (prisma) await prisma.$disconnect();
   if (pgServer) await pgServer.stop();
   await db.close();
@@ -715,10 +720,10 @@ test("histórico mantém criação, edições, status e exclusão do mesmo produ
     (await request("GET", "/notificacoes")).data.notificacoes.some(
       (n) => n.produtoId === id,
     ),
-    false,
+    true,
   );
 });
-test("somente a plataforma de destino recebe e pode marcar os eventos; contas continuam isoladas", async () => {
+test("histórico existe nas duas plataformas e leituras e contas continuam isoladas", async () => {
   const p = await seed("HIST-LEITURA");
   await request(
     "PATCH",
@@ -744,7 +749,7 @@ test("somente a plataforma de destino recebe e pode marcar os eventos; contas co
   );
   assert.equal(
     propria.data.notificacoes.some((n) => n.produtoId === p.id),
-    false,
+    true,
   );
   assert.equal(
     (
@@ -757,7 +762,7 @@ test("somente a plataforma de destino recebe e pode marcar os eventos; contas co
         "mobile",
       )
     ).data.afetadas,
-    0,
+    1,
   );
   assert.equal(
     (await request("PATCH", "/notificacoes/lidas", corpo, true, outroBearer))
@@ -798,8 +803,8 @@ test("somente a plataforma de destino recebe e pode marcar os eventos; contas co
     400,
   );
 });
-test("uma mesma conta com ações nos dois clientes só recebe a origem oposta, inclusive contagens", async () => {
-  const p = await seed("HIST-CRUZADO");
+test("histórico completo é igual nas duas plataformas; não lidas contam somente origem oposta", async () => {
+  const p = await seed("LOG-COMPARTILHADO");
   await request(
     "PATCH",
     `/produtos/${p.id}/status`,
@@ -828,26 +833,21 @@ test("uma mesma conta com ações nos dois clientes só recebe a origem oposta, 
     const dados = (
       await request("GET", "/notificacoes", undefined, true, bearer, origem)
     ).data;
-    assert.ok(
-      dados.notificacoes.every(
-        (n) => n.origem === (origem === "web" ? "mobile" : "web"),
-      ),
-    );
-    const where = { usuarioId: 1, origem: origem === "web" ? "mobile" : "web" };
+    const where = { usuarioId: 1 };
     assert.equal(dados.total, await prisma.notificacao.count({ where }));
     assert.equal(
       dados.naoLidas,
       await prisma.notificacao.count({
         where: {
           ...where,
+          origem: origem === "web" ? "mobile" : "web",
           [origem === "web" ? "lidaWeb" : "lidaMobile"]: false,
         },
       }),
     );
-    assert.equal(
-      dados.notificacoes.filter((n) => n.produtoId === p.id).length,
-      origem === "web" ? 1 : 2,
-    );
+    const itens = dados.notificacoes.filter((n) => n.produtoId === p.id);
+    assert.equal(itens.length, 3);
+    assert.ok(itens.filter((n) => n.origem === origem).every((n) => n.lida));
   }
 });
 test("lote registra eventos individuais, ignora no-op e falha reverte produto e evento", async () => {
@@ -916,45 +916,29 @@ test("imagem removida gera evento e repetição sem foto não gera duplicata", a
     1,
   );
 });
-test("origem desconhecida não produz notificações cruzadas nem expõe avisos legados sem origem", async () => {
-  const p = await seed("HIST-SEM-ORIGEM");
-  assert.equal(
-    (
-      await request(
-        "PATCH",
-        `/produtos/${p.id}/status`,
-        undefined,
-        true,
-        bearer,
-        "api",
-      )
-    ).status,
-    200,
+test("operações sem origem conhecida entram no log das duas plataformas sem gerar não lidas", async () => {
+  const p = await seed("LOG-API");
+  await request(
+    "PATCH",
+    `/produtos/${p.id}/status`,
+    undefined,
+    true,
+    bearer,
+    "api",
   );
   assert.equal(
     await prisma.notificacao.count({ where: { produtoId: p.id } }),
-    0,
+    1,
   );
-  await prisma.notificacao.create({
-    data: {
-      usuarioId: 1,
-      produtoId: p.id,
-      codigo: p.codigo_produto,
-      descricao: p.descricao_produto,
-      acao: "editado",
-      campos: ["inativado"],
-      origem: "api",
-    },
-  });
-  for (const origem of ["web", "mobile"])
-    assert.equal(
-      (
-        await request("GET", "/notificacoes", undefined, true, bearer, origem)
-      ).data.notificacoes.some((n) => n.produtoId === p.id),
-      false,
-    );
+  for (const origem of ["web", "mobile"]) {
+    const n = (
+      await request("GET", "/notificacoes", undefined, true, bearer, origem)
+    ).data.notificacoes.find((n) => n.produtoId === p.id);
+    assert.equal(n.origem, "api");
+    assert.equal(n.lida, true);
+  }
 });
-test("paginação e totais contam apenas origem oposta e ordenam eventos por data e ID", async () => {
+test("paginação mostra todo o log e contador considera apenas a origem oposta", async () => {
   const token = jwt.sign({ id: 3 }, process.env.JWT_SECRET);
   const instante = new Date("2026-11-17T12:00:00Z");
   await prisma.notificacao.createMany({
@@ -981,13 +965,13 @@ test("paginação e totais contam apenas origem oposta e ordenam eventos por dat
   const a = await get(1);
   const b = await get(2);
   assert.equal(a.status, 200);
-  assert.equal(a.data.total, 60);
+  assert.equal(a.data.total, 90);
   assert.equal(a.data.naoLidas, 60);
   assert.equal(a.data.paginas, 2);
   assert.equal(a.data.notificacoes.length, 50);
-  assert.equal(b.data.notificacoes.length, 10);
+  assert.equal(b.data.notificacoes.length, 40);
   const ids = [...a.data.notificacoes, ...b.data.notificacoes].map((n) => n.id);
-  assert.equal(new Set(ids).size, 60);
+  assert.equal(new Set(ids).size, 90);
   assert.deepEqual(
     ids,
     ids.toSorted((a, b) => b - a),
@@ -997,5 +981,147 @@ test("paginação e totais contam apenas origem oposta e ordenam eventos por dat
     (await request("PATCH", "/notificacoes/lidas", { notificacoes: [] }))
       .status,
     400,
+  );
+});
+
+test("tempo real autentica por ticket, isola contas, envia log às duas plataformas e não publica rollback", async () => {
+  const { io } = await import("socket.io-client");
+  const abrir = async (token, origem) => {
+    const r = await request(
+      "GET",
+      "/notificacoes/conexao",
+      undefined,
+      true,
+      token,
+      origem,
+    );
+    assert.equal(r.status, 200);
+    const socket = io(base, {
+      transports: ["websocket"],
+      reconnection: false,
+      auth: { ticket: r.data.ticket },
+    });
+    await new Promise((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("connect_error", reject);
+    });
+    return socket;
+  };
+  const web = await abrir(bearer, "web");
+  const mobile = await abrir(bearer, "mobile");
+  const outra = await abrir(outroBearer, "web");
+  const eventosWeb = [],
+    eventosMobile = [],
+    eventosOutra = [];
+  web.on("notificacoes", (n) => eventosWeb.push(n));
+  mobile.on("notificacoes", (n) => eventosMobile.push(n));
+  outra.on("notificacoes", (n) => eventosOutra.push(n));
+  const esperar = async (n) => {
+    for (let i = 0; i < 100 && eventosMobile.length < n; i++)
+      await new Promise((r) => setTimeout(r, 10));
+    assert.equal(eventosMobile.length, n);
+    assert.equal(eventosWeb.length, n);
+  };
+  try {
+    const form = new FormData();
+    form.set("codigo_produto", "SOCKET-1");
+    form.set("descricao_produto", "Tempo real");
+    const criado = await request("POST", "/produtos", form);
+    assert.equal(criado.status, 201);
+    await esperar(1);
+    assert.equal(eventosWeb[0][0].id, eventosMobile[0][0].id);
+    assert.equal(eventosWeb[0][0].lida, true);
+    assert.equal(eventosMobile[0][0].lida, false);
+    assert.equal(eventosWeb[0][0].origem, "web");
+    assert.equal(eventosWeb[0][0].usuarioId, undefined);
+    failNotificacao = true;
+    try {
+      assert.equal(
+        (await request("PATCH", `/produtos/${criado.data.id}/status`)).status,
+        500,
+      );
+    } finally {
+      failNotificacao = false;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(eventosWeb.length, 1);
+    await request(
+      "PATCH",
+      `/produtos/${criado.data.id}/status`,
+      undefined,
+      true,
+      bearer,
+      "mobile",
+    );
+    await esperar(2);
+    assert.equal(eventosWeb[1][0].lida, false);
+    assert.equal(eventosMobile[1][0].lida, true);
+    assert.equal(eventosWeb[1][0].origem, "mobile");
+    const p = await seed("SOCKET-LOTE-1");
+    const q = await seed("SOCKET-LOTE-2");
+    await request("PATCH", "/produtos/status", {
+      ids: [p.id, q.id],
+      status: "inativo",
+    });
+    await esperar(3);
+    assert.equal(eventosMobile[2].length, 2);
+    assert.equal(eventosOutra.length, 0);
+  } finally {
+    web.disconnect();
+    mobile.disconnect();
+    outra.disconnect();
+  }
+});
+test("tickets de tempo real rejeitam adulteração, expiração, uso de JWT comum e uso como Bearer da API", async () => {
+  const { io } = await import("socket.io-client");
+  const rejeitar = async (ticket) => {
+    const s = io(base, {
+      transports: ["websocket"],
+      reconnection: false,
+      auth: { ticket },
+    });
+    try {
+      await new Promise((resolve, reject) => {
+        s.once("connect", () =>
+          reject(new Error("Conexão não deveria ser aceita")),
+        );
+        s.once("connect_error", resolve);
+      });
+    } finally {
+      s.disconnect();
+    }
+  };
+  await rejeitar(bearer);
+  await rejeitar(
+    jwt.sign(
+      {
+        id: 1,
+        plataforma: "web",
+        finalidade: "notificacoes",
+        sessaoExpiraEm: Math.floor(Date.now() / 1000) + 30,
+      },
+      "outro-segredo",
+    ),
+  );
+  await rejeitar(
+    jwt.sign(
+      {
+        id: 1,
+        plataforma: "web",
+        finalidade: "notificacoes",
+        sessaoExpiraEm: Math.floor(Date.now() / 1000) + 30,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: -1 },
+    ),
+  );
+  const ticket = (await request("GET", "/notificacoes/conexao")).data.ticket;
+  assert.equal(
+    (await request("GET", "/produtos", undefined, true, ticket)).status,
+    401,
+  );
+  assert.equal(
+    (await request("GET", "/notificacoes/conexao", undefined, false)).status,
+    401,
   );
 });

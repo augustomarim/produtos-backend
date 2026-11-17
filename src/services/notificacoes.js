@@ -20,8 +20,6 @@ export async function registrarNotificacao(
   campos = [],
 ) {
   const origem = origemDoCliente(req);
-  // Sem origem conhecida, não há destino cruzado confiável.
-  if (origem === "api") return;
   const data = {
     codigo: produto.codigo_produto,
     descricao: produto.descricao_produto,
@@ -29,13 +27,14 @@ export async function registrarNotificacao(
     campos,
     origem,
     ocorreuEm: new Date(),
-    lidaWeb: origem === "web",
-    lidaMobile: origem === "mobile",
+    lidaWeb: origem !== "mobile",
+    lidaMobile: origem !== "web",
   };
   // Cada operação é um evento independente; nunca substitui o histórico.
-  await tx.notificacao.create({
+  const evento = await tx.notificacao.create({
     data: { ...data, usuarioId: req.usuario.id, produtoId: produto.id },
   });
+  (req.eventosNotificacao ??= []).push(evento);
 }
 // Serializa leitura, alteração e registro do evento. O evento e o produto confirmam juntos.
 export async function comProdutoTravado(prisma, req, id, operacao) {

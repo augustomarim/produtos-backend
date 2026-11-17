@@ -487,57 +487,65 @@ iguais, contagens, busca, todos os endpoints por ID, envio/substituição/remoç
 de fotos, lotes mistos e tentativas de forjar autoria. Testam também a migração
 com dados antigos e a preservação de usuários/sessões; não alteram o Neon.
 
-## Histórico de notificações internas
+## Histórico compartilhado e alertas em tempo real
 
-Cada operação real gera um evento independente: criação, edição, ativação/
-inativação, substituição/remoção de imagem e exclusão. Editar → inativar →
-excluir mantém os três eventos, com o nome/código e data de cada operação.
-Salvar sem mudar nada e aplicar um status já existente não geram duplicatas.
-Os campos alterados são registrados sem guardar valores anteriores.
+O histórico completo da conta aparece no web **e** no mobile: cada criação,
+edição, mudança de status, imagem ou exclusão fica registrada. Salvar sem mudar
+nada e aplicar status já existente não criam duplicatas. Campos alterados são
+informados sem valores anteriores; excluir não apaga eventos anteriores.
 
-O destino é estritamente cruzado, dentro da mesma conta:
+O histórico e o alerta têm regras diferentes:
 
-- `X-App-Origin: web` na operação: somente o mobile recebe o aviso.
-- `X-App-Origin: mobile` na operação: somente o web recebe o aviso.
-- Sem origem reconhecida: CRUD continua funcionando, mas não gera notificação.
-  Avisos legados de origem `api` não são exibidos em nenhuma central.
+- Origem `web`: evento no histórico dos dois; somente o mobile recebe bubble,
+  som e não lida. No web, a própria ação já fica lida.
+- Origem `mobile`: evento no histórico dos dois; somente o web recebe o alerta.
+- Origem desconhecida (`api`): entra no log dos dois, sem alerta sonoro/visual.
+- Toda consulta, leitura e conexão é isolada por usuário autenticado.
 
-Consulta, contagens, paginação e marcação de leitura aplicam o mesmo filtro de
-origem e usuário. Nem mesmo informando um ID conhecido o cliente pode marcar
-uma notificação destinada ao outro. Usuário sempre vem do JWT; origem nunca
-substitui autorização. O evento e a escrita do produto confirmam na mesma
-transação, com bloqueio do produto para serializar alterações concorrentes.
+`registrarNotificacao` escreve na mesma transação do produto. O middleware
+`publicarAposResposta` transmite somente após resposta de sucesso (commit já
+concluído); falhas/rollback não disparam eventos. Um lote gera um pacote com
+seus eventos para permitir um único som/bubble de resumo.
 
-Rotas autenticadas (ambas exigem `X-App-Origin: web` ou `mobile`):
+### Transporte
+
+Socket.IO usa o mesmo HTTP server/porta do Express, com WebSocket. Não depende
+de polling de 30 segundos. A API fornece ticket de conexão de 60 segundos por
+`GET /notificacoes/conexao`, autenticado por Bearer e `X-App-Origin: web|mobile`.
+O ticket é restrito à conexão e não pode ser utilizado como Bearer da API.
+A conexão termina no vencimento da autorização (até 15 minutos); o cliente
+obtém outro ticket com a renovação normal da sessão. Tokens não vão na URL.
+Cada socket entra somente na sala do usuário e plataforma validados no ticket.
+
+Rotas HTTP autenticadas continuam disponíveis:
 
 ```text
-GET   /notificacoes?pagina=1   (50 por página, recentes primeiro)
+GET   /notificacoes?pagina=1   (histórico completo, 50 por página)
 PATCH /notificacoes/lidas     {"notificacoes":[{"id":1,"revisao":1}]}
+GET   /notificacoes/conexao   (ticket curto para WebSocket)
 ```
 
-A consulta retorna `notificacoes`, `naoLidas` (do destino), `total`, `pagina` e
-`paginas`. A leitura aceita até 100 eventos; marcar um aviso antigo não marca
-os posteriores. `revisao` permanece por compatibilidade com avisos existentes.
-Eventos não dependem da existência do produto e continuam após sua exclusão.
-Não há push ou novas variáveis de ambiente.
+O retorno do log inclui `naoLidas` somente da origem oposta, `total`, `pagina` e
+`paginas`. Na reconexão os clientes refazem log e catálogo para cobrir o período
+offline. Não há push: o mobile recebe esses alertas com o app aberto/ativo.
 
-### Atualização no Render
+### Implantação
 
-A migração `20261117190000_historico_notificacoes` remove a unicidade por
-usuário/produto e cria índices para histórico e destino. Preserva os registros
-atuais, incluindo suas leituras. **Edições já substituídas pela implementação
-anterior não podem ser reconstruídas**: o histórico completo começa a partir
-da atualização.
+As branches são `codex/notificacoes-tempo-real` nos três repositórios. Atualize
+primeiro o backend no Render e depois web/mobile. O Start Command continua
+`npm start` e o build pode continuar `npm ci && npx prisma migrate deploy`.
+Não há migração ou segredo novo nesta etapa. As migrações anteriores continuam
+necessárias; o histórico preserva dados antigos e não reconstrói edições que
+foram sobrescritas antes da migração de histórico.
 
-Aplique as migrações no ambiente do serviço antes de iniciar o backend novo:
+O web recebe o endereço público do socket pelo BFF, a partir de API_URL; o
+mobile usa EXPO_PUBLIC_API_URL. Use a URL pública HTTPS do Render. O websocket
+é direto ao Render, sem depender de conexão permanente nas funções da Vercel.
 
-```bash
-npx prisma migrate deploy
-```
+A transmissão usa as salas de uma instância do serviço. Ao escalar para várias
+instâncias, configure um adapter/pubsub compartilhado antes de distribuir
+conexões entre elas; o banco continua sendo a fonte do histórico.
 
-O build pode usar `npm ci && npx prisma migrate deploy` (o postinstall já gera
-Prisma Client). Configure isso antes de implantar a atualização, para não
-executar o código novo sobre o índice único antigo. Não cole DATABASE_URL em
-chat ou no repositório. Depois atualize web/mobile pelas branches
-`codex/historico-notificacoes`. Nenhuma migração de produção foi executada nos
-nossos testes; estes usam banco PostgreSQL isolado.
+Testes locais usam PostgreSQL isolado e clientes Socket.IO reais para verificar
+autenticação, contas, leituras, lotes, histórico e ausência de envio em rollback.
+Não acessam o Neon publicado.
