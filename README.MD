@@ -487,50 +487,57 @@ iguais, contagens, busca, todos os endpoints por ID, envio/substituição/remoç
 de fotos, lotes mistos e tentativas de forjar autoria. Testam também a migração
 com dados antigos e a preservação de usuários/sessões; não alteram o Neon.
 
-## Notificações internas
+## Histórico de notificações internas
 
-A migração `20261117000000_notificacoes` adiciona uma tabela de snapshots por
-usuário/produto. Não altera nem apaga produtos existentes. Sem retroatividade:
-produtos antigos passam a ter aviso quando forem modificados após a atualização.
+Cada operação real gera um evento independente: criação, edição, ativação/
+inativação, substituição/remoção de imagem e exclusão. Editar → inativar →
+excluir mantém os três eventos, com o nome/código e data de cada operação.
+Salvar sem mudar nada e aplicar um status já existente não geram duplicatas.
+Os campos alterados são registrados sem guardar valores anteriores.
 
-- Criar, editar, ativar/inativar, substituir/remover imagem e excluir geram avisos.
-- Cada produto conserva somente a última operação, incluindo quando já foi lida.
-  Editar → inativar → excluir deixa somente o aviso de exclusão.
-- Edições informam os campos que mudaram, sem armazenar valores anteriores.
-  Salvar sem alteração real e aplicar um status já existente não geram aviso.
-- A origem vem de `X-App-Origin: web|mobile`; clientes sem identificação ficam
-  como `api`. Isso define apresentação/leitura, nunca autorização.
-- Operações feitas no próprio cliente ficam lidas nesse cliente. No outro,
-  aparecem não lidas. A central também permite consultar operações próprias.
-- Leitura é independente entre web e mobile e usa `{id,revisao}` para não marcar
-  uma alteração nova quando o usuário confirmou um aviso antigo.
-- Usuário é sempre obtido pelo JWT. A exclusão do produto preserva seu nome/código
-  no snapshot, sem vínculo que remova a notificação junto com o produto.
-- Evento e escrita de produto usam a mesma transação; alterações do mesmo produto
-  são serializadas com bloqueio da linha. Cloudinary continua fora da transação.
+O destino é estritamente cruzado, dentro da mesma conta:
 
-Rotas autenticadas:
+- `X-App-Origin: web` na operação: somente o mobile recebe o aviso.
+- `X-App-Origin: mobile` na operação: somente o web recebe o aviso.
+- Sem origem reconhecida: CRUD continua funcionando, mas não gera notificação.
+  Avisos legados de origem `api` não são exibidos em nenhuma central.
+
+Consulta, contagens, paginação e marcação de leitura aplicam o mesmo filtro de
+origem e usuário. Nem mesmo informando um ID conhecido o cliente pode marcar
+uma notificação destinada ao outro. Usuário sempre vem do JWT; origem nunca
+substitui autorização. O evento e a escrita do produto confirmam na mesma
+transação, com bloqueio do produto para serializar alterações concorrentes.
+
+Rotas autenticadas (ambas exigem `X-App-Origin: web` ou `mobile`):
 
 ```text
 GET   /notificacoes?pagina=1   (50 por página, recentes primeiro)
-PATCH /notificacoes/lidas     {"notificacoes":[{"id":1,"revisao":2}]}
+PATCH /notificacoes/lidas     {"notificacoes":[{"id":1,"revisao":1}]}
 ```
 
-Ambas exigem `X-App-Origin: web` ou `mobile`. O retorno da consulta contém
-`notificacoes`, `naoLidas` (total da plataforma), `total`, `pagina` e `paginas`.
-A marcação aceita até 100 snapshots e afeta somente a conta autenticada.
-Não há push, envio de email, permissões nativas ou serviço externo novo.
+A consulta retorna `notificacoes`, `naoLidas` (do destino), `total`, `pagina` e
+`paginas`. A leitura aceita até 100 eventos; marcar um aviso antigo não marca
+os posteriores. `revisao` permanece por compatibilidade com avisos existentes.
+Eventos não dependem da existência do produto e continuam após sua exclusão.
+Não há push ou novas variáveis de ambiente.
 
-### Implantação desta atualização
+### Atualização no Render
 
-Antes de executar o backend novo no Render, aplique a migração:
+A migração `20261117190000_historico_notificacoes` remove a unicidade por
+usuário/produto e cria índices para histórico e destino. Preserva os registros
+atuais, incluindo suas leituras. **Edições já substituídas pela implementação
+anterior não podem ser reconstruídas**: o histórico completo começa a partir
+da atualização.
+
+Aplique as migrações no ambiente do serviço antes de iniciar o backend novo:
 
 ```bash
 npx prisma migrate deploy
 ```
 
-Use o ambiente do serviço, que já possui DATABASE_URL; não cole credenciais em
-chat ou no repositório. O script `postinstall` continua gerando o Prisma Client.
-Integre/implante primeiro o backend e depois as branches de web e mobile.
-As branches preparadas para revisão se chamam `codex/notificacoes` nos três
-repositórios. Nenhuma migração de produção foi executada durante os testes.
+O build pode usar `npm ci && npx prisma migrate deploy` (o postinstall já gera
+Prisma Client). Configure isso antes de implantar a atualização, para não
+executar o código novo sobre o índice único antigo. Não cole DATABASE_URL em
+chat ou no repositório. Depois atualize web/mobile pelas branches
+`codex/historico-notificacoes`. Nenhuma migração de produção foi executada nos
+nossos testes; estes usam banco PostgreSQL isolado.

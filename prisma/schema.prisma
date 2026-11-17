@@ -61,7 +61,7 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
-// Snapshot independente de Produto: a notificação continua após exclusão.
+// Evento imutável: o histórico continua após a exclusão do produto.
 model Notificacao {
   id          Int      @id @default(autoincrement())
   usuarioId   Int
@@ -77,7 +77,8 @@ model Notificacao {
   ocorreuEm   DateTime @default(now())
   usuario     Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
 
-  @@unique([usuarioId, produtoId])
+  @@index([usuarioId, produtoId])
   @@index([usuarioId, ocorreuEm(sort: Desc), id(sort: Desc)])
+  @@index([usuarioId, origem, ocorreuEm(sort: Desc), id(sort: Desc)])
   @@map("notificacoes")
 }
