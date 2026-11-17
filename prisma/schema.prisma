@@ -25,6 +25,7 @@ model Usuario {
   senha         String
   refreshTokens RefreshToken[]
   produtos      Produto[]
+  notificacoes  Notificacao[]
 
   @@map("usuarios")
 }
@@ -58,4 +59,25 @@ model RefreshToken {
 
   @@index([usuarioId])
   @@map("refresh_tokens")
+}
+
+// Snapshot independente de Produto: a notificação continua após exclusão.
+model Notificacao {
+  id          Int      @id @default(autoincrement())
+  usuarioId   Int
+  produtoId   Int
+  codigo      String
+  descricao   String
+  acao        String
+  campos      String[]
+  origem      String
+  revisao     Int      @default(1)
+  lidaWeb     Boolean  @default(false)
+  lidaMobile  Boolean  @default(false)
+  ocorreuEm   DateTime @default(now())
+  usuario     Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@unique([usuarioId, produtoId])
+  @@index([usuarioId, ocorreuEm(sort: Desc), id(sort: Desc)])
+  @@map("notificacoes")
 }

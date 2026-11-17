@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import produtosRoutes from "./routes/produtosRoutes.js";
+import notificacoesRoutes from "./routes/notificacoesRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import auth from "./middlewares/auth.js";
 
@@ -23,6 +24,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use("/produtos", auth, produtosRoutes);
+app.use("/notificacoes", auth, notificacoesRoutes);
 app.use("/auth", authRoutes);
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
