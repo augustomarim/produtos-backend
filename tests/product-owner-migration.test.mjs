@@ -6,7 +6,7 @@ test("migração remove produtos sem dono, preserva contas/sessões e impõe don
   const db = new PGlite();
   try {
     const dir = new URL("../prisma/migrations/", import.meta.url);
-    const names = (await readdir(dir)).filter((n) => /^\d/.test(n)).sort();
+    const names = (await readdir(dir)).filter((n) => /^\d/.test(n) && n <= "20261105180000_produtos_por_usuario").sort();
     for (const name of names.slice(0, -1))
       await db.exec(
         await readFile(new URL(`${name}/migration.sql`, dir), "utf8"),

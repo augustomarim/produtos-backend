@@ -486,3 +486,51 @@ Os testes locais usam Prisma real/PGlite e duas contas para verificar códigos
 iguais, contagens, busca, todos os endpoints por ID, envio/substituição/remoção
 de fotos, lotes mistos e tentativas de forjar autoria. Testam também a migração
 com dados antigos e a preservação de usuários/sessões; não alteram o Neon.
+
+## Notificações internas
+
+A migração `20261117000000_notificacoes` adiciona uma tabela de snapshots por
+usuário/produto. Não altera nem apaga produtos existentes. Sem retroatividade:
+produtos antigos passam a ter aviso quando forem modificados após a atualização.
+
+- Criar, editar, ativar/inativar, substituir/remover imagem e excluir geram avisos.
+- Cada produto conserva somente a última operação, incluindo quando já foi lida.
+  Editar → inativar → excluir deixa somente o aviso de exclusão.
+- Edições informam os campos que mudaram, sem armazenar valores anteriores.
+  Salvar sem alteração real e aplicar um status já existente não geram aviso.
+- A origem vem de `X-App-Origin: web|mobile`; clientes sem identificação ficam
+  como `api`. Isso define apresentação/leitura, nunca autorização.
+- Operações feitas no próprio cliente ficam lidas nesse cliente. No outro,
+  aparecem não lidas. A central também permite consultar operações próprias.
+- Leitura é independente entre web e mobile e usa `{id,revisao}` para não marcar
+  uma alteração nova quando o usuário confirmou um aviso antigo.
+- Usuário é sempre obtido pelo JWT. A exclusão do produto preserva seu nome/código
+  no snapshot, sem vínculo que remova a notificação junto com o produto.
+- Evento e escrita de produto usam a mesma transação; alterações do mesmo produto
+  são serializadas com bloqueio da linha. Cloudinary continua fora da transação.
+
+Rotas autenticadas:
+
+```text
+GET   /notificacoes?pagina=1   (50 por página, recentes primeiro)
+PATCH /notificacoes/lidas     {"notificacoes":[{"id":1,"revisao":2}]}
+```
+
+Ambas exigem `X-App-Origin: web` ou `mobile`. O retorno da consulta contém
+`notificacoes`, `naoLidas` (total da plataforma), `total`, `pagina` e `paginas`.
+A marcação aceita até 100 snapshots e afeta somente a conta autenticada.
+Não há push, envio de email, permissões nativas ou serviço externo novo.
+
+### Implantação desta atualização
+
+Antes de executar o backend novo no Render, aplique a migração:
+
+```bash
+npx prisma migrate deploy
+```
+
+Use o ambiente do serviço, que já possui DATABASE_URL; não cole credenciais em
+chat ou no repositório. O script `postinstall` continua gerando o Prisma Client.
+Integre/implante primeiro o backend e depois as branches de web e mobile.
+As branches preparadas para revisão se chamam `codex/notificacoes` nos três
+repositórios. Nenhuma migração de produção foi executada durante os testes.

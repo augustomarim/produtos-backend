@@ -9,6 +9,12 @@ import {
   consultarProdutosPaginados,
 } from "../consultarProdutos.js";
 
+import {
+  registrarNotificacao,
+  camposAlterados,
+  comProdutoTravado,
+} from "../services/notificacoes.js";
+
 const router = Router();
 
 const upload = multer({
@@ -213,8 +219,12 @@ router.post("/", receberFoto, async (req, res) => {
       fotoEnviada = result.secure_url;
       produtoData.foto_produto = fotoEnviada;
     }
-    const produto = await prisma.produto.create({
-      data: { ...produtoData, usuarioId: req.usuario.id },
+    const produto = await prisma.$transaction(async (tx) => {
+      const criado = await tx.produto.create({
+        data: { ...produtoData, usuarioId: req.usuario.id },
+      });
+      await registrarNotificacao(tx, req, criado, "criado");
+      return criado;
     });
     res.status(201).json(comMiniatura(produto));
   } catch (error) {
@@ -250,13 +260,24 @@ router.put("/:id", receberFoto, async (req, res) => {
       fotoNova = result.secure_url;
       produtoData.foto_produto = fotoNova;
     }
-    const produto = await prisma.produto.update({
-      where: { id, usuarioId: req.usuario.id },
-      data: produtoData,
-    });
-    if (fotoNova && atual.foto_produto) {
-      await apagarFotoDoCloudinary(atual.foto_produto);
-    }
+    const { produto, anterior } = await comProdutoTravado(
+      prisma,
+      req,
+      id,
+      async (tx, anterior) => {
+        const previsto = { ...anterior, ...produtoData };
+        const campos = camposAlterados(anterior, previsto);
+        if (!campos.length) return { produto: anterior, anterior };
+        const produto = await tx.produto.update({
+          where: { id, usuarioId: req.usuario.id },
+          data: produtoData,
+        });
+        await registrarNotificacao(tx, req, produto, "editado", campos);
+        return { produto, anterior };
+      },
+    );
+    if (fotoNova && anterior.foto_produto)
+      await apagarFotoDoCloudinary(anterior.foto_produto);
     res.json(comMiniatura(produto));
   } catch (error) {
     if (fotoNova) await apagarFotoDoCloudinary(fotoNova);
@@ -283,6 +304,10 @@ router.patch("/status", async (req, res) => {
             data: { status: dados.status },
           })
         : [];
+      for (const produto of atualizados)
+        await registrarNotificacao(tx, req, produto, "editado", [
+          dados.status === "ativo" ? "ativado" : "inativado",
+        ]);
       const mapa = new Map(atualizados.map((p) => [p.id, p]));
       return {
         afetados: atualizados.length,
@@ -306,16 +331,22 @@ router.patch("/:id/status", async (req, res) => {
   if (id === null) return;
 
   try {
-    const produto = await prisma.produto.findUnique({
-      where: { id, usuarioId: req.usuario.id },
-    });
-    if (!produto) {
-      return res.status(404).json({ error: "Produto não encontrado" });
-    }
-    const updatedProduto = await prisma.produto.update({
-      where: { id, usuarioId: req.usuario.id },
-      data: { status: produto.status === "ativo" ? "inativo" : "ativo" },
-    });
+    const updatedProduto = await comProdutoTravado(
+      prisma,
+      req,
+      id,
+      async (tx, produto) => {
+        const status = produto.status === "ativo" ? "inativo" : "ativo";
+        const atualizado = await tx.produto.update({
+          where: { id, usuarioId: req.usuario.id },
+          data: { status },
+        });
+        await registrarNotificacao(tx, req, atualizado, "editado", [
+          status === "ativo" ? "ativado" : "inativado",
+        ]);
+        return atualizado;
+      },
+    );
     res.json(comMiniatura(updatedProduto));
   } catch (error) {
     tratarErro(error, res);
@@ -331,7 +362,7 @@ router.delete("/", async (req, res) => {
       // racing a photo replacement between the read and the delete.
       // The tagged query binds the ID array as a parameter, never SQL text.
       const produtos = await tx.$queryRaw`
-                SELECT "id", "foto_produto" FROM "produtos"
+                SELECT * FROM "produtos"
                 WHERE "usuarioId" = ${req.usuario.id} AND "id" = ANY(${dados.ids}::int[])
                 ORDER BY "id" FOR UPDATE
             `;
@@ -343,6 +374,8 @@ router.delete("/", async (req, res) => {
           },
         });
       }
+      for (const produto of produtos)
+        await registrarNotificacao(tx, req, produto, "removido");
       return produtos;
     });
 
@@ -376,9 +409,16 @@ router.delete("/:id", async (req, res) => {
   if (id === null) return;
 
   try {
-    const removido = await prisma.produto.delete({
-      where: { id, usuarioId: req.usuario.id },
-    });
+    const removido = await comProdutoTravado(
+      prisma,
+      req,
+      id,
+      async (tx, produto) => {
+        await tx.produto.delete({ where: { id, usuarioId: req.usuario.id } });
+        await registrarNotificacao(tx, req, produto, "removido");
+        return produto;
+      },
+    );
     if (removido.foto_produto) {
       await apagarFotoDoCloudinary(removido.foto_produto);
     }
@@ -393,21 +433,21 @@ router.delete("/:id/foto", async (req, res) => {
   if (id === null) return;
 
   try {
-    const atual = await prisma.produto.findUnique({
-      where: { id, usuarioId: req.usuario.id },
-    });
-    if (!atual) {
-      return res.status(404).json({ error: "Produto não encontrado" });
-    }
-    if (!atual.foto_produto) {
-      return res.json(comMiniatura(atual));
-    }
-
-    const produto = await prisma.produto.update({
-      where: { id, usuarioId: req.usuario.id },
-      data: { foto_produto: null },
-    });
-    await apagarFotoDoCloudinary(atual.foto_produto);
+    const { produto, fotoAnterior } = await comProdutoTravado(
+      prisma,
+      req,
+      id,
+      async (tx, atual) => {
+        if (!atual.foto_produto) return { produto: atual, fotoAnterior: null };
+        const produto = await tx.produto.update({
+          where: { id, usuarioId: req.usuario.id },
+          data: { foto_produto: null },
+        });
+        await registrarNotificacao(tx, req, produto, "editado", ["imagem"]);
+        return { produto, fotoAnterior: atual.foto_produto };
+      },
+    );
+    if (fotoAnterior) await apagarFotoDoCloudinary(fotoAnterior);
     res.json(comMiniatura(produto));
   } catch (error) {
     tratarErro(error, res);

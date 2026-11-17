@@ -16,6 +16,13 @@ const produto = {
 mock.module("../src/prisma.js", {
   exports: {
     default: {
+      async $transaction(callback) {
+        return callback({
+          $queryRaw: async () => [produto],
+          produto: {update: async ({data}) => ({...produto,...data,updatedAt:"2026-11-03T13:00:00.000Z"})},
+          notificacao: {upsert: async () => ({})},
+        });
+      },
       produto: {
         async findMany(args) {
           consulta = args;
