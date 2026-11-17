@@ -15,6 +15,7 @@ export default function auth(req, res, next) {
     });
     if (
       typeof usuario !== "object" ||
+      usuario.finalidade !== undefined ||
       !Number.isInteger(usuario.id) ||
       usuario.id <= 0 ||
       usuario.id > 2147483647

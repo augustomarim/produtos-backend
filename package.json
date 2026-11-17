@@ -34,6 +34,7 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.5.0",
     "prisma": "^6.19.3",
+    "socket.io": "^4.8.4",
     "zod": "^3.25.76"
   },
   "allowScripts": {
@@ -43,6 +44,7 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.15",
-    "@electric-sql/pglite-socket": "^0.2.18"
+    "@electric-sql/pglite-socket": "^0.2.18",
+    "socket.io-client": "^4.8.4"
   }
 }
