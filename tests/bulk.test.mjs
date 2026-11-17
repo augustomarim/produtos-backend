@@ -34,10 +34,10 @@ const client = new Proxy(
               $queryRaw: tx.$queryRaw.bind(tx),
               notificacao: {
                 ...tx.notificacao,
-                async upsert(args) {
+                async create(args) {
                   if (failNotificacao)
                     throw new Error("Injected notification rollback");
-                  return tx.notificacao.upsert(args);
+                  return tx.notificacao.create(args);
                 },
               },
               produto: {
@@ -673,59 +673,53 @@ test("tokens assinados sem identidade válida são rejeitados", async () => {
   }
 });
 
-test("notificações: criação, edição real, no-op e exclusão consolidam um snapshot por produto", async () => {
+test("histórico mantém criação, edições, status e exclusão do mesmo produto sem substituir eventos", async () => {
   const form = new FormData();
-  form.set("codigo_produto", "NOTIF-CRUD");
+  form.set("codigo_produto", "HIST-CRUD");
   form.set("descricao_produto", "Café");
   const criado = await request("POST", "/produtos", form);
   assert.equal(criado.status, 201);
   const id = criado.data.id;
-  const lista = () =>
-    request("GET", "/notificacoes", undefined, true, bearer, "mobile");
-  let evento = (await lista()).data.notificacoes.find(
-    (n) => n.produtoId === id,
-  );
-  assert.equal(evento.acao, "criado");
-  assert.equal(evento.lida, false);
-  const inicial = evento.revisao;
-  assert.equal(
-    (await request("GET", "/notificacoes")).data.notificacoes.find(
-      (n) => n.produtoId === id,
-    ).lida,
-    true,
-  );
+  const lista = async () =>
+    (
+      await request("GET", "/notificacoes", undefined, true, bearer, "mobile")
+    ).data.notificacoes.filter((n) => n.produtoId === id);
+  const inicial = (await lista())[0];
+  assert.equal(inicial.acao, "criado");
+  assert.equal(inicial.lida, false);
   const vazio = new FormData();
   vazio.set("descricao_produto", "Café");
-  assert.equal((await request("PUT", `/produtos/${id}`, vazio)).status, 200);
-  assert.equal(
-    (await lista()).data.notificacoes.find((n) => n.produtoId === id).revisao,
-    inicial,
-  );
+  await request("PUT", `/produtos/${id}`, vazio);
+  assert.equal((await lista()).length, 1);
   const editar = new FormData();
+  editar.set("codigo_produto", "HIST-NOVO");
   editar.set("descricao_produto", "Café novo");
-  editar.set("codigo_produto", "NOTIF-NOVO");
-  assert.equal((await request("PUT", `/produtos/${id}`, editar)).status, 200);
-  evento = (await lista()).data.notificacoes.find((n) => n.produtoId === id);
-  assert.deepEqual(evento.campos, ["codigo", "descricao"]);
-  assert.equal(evento.acao, "editado");
-  assert.equal(evento.revisao, inicial + 1);
-  assert.equal((await request("PATCH", `/produtos/${id}/status`)).status, 200);
+  await request("PUT", `/produtos/${id}`, editar);
+  await request("PATCH", `/produtos/${id}/status`);
+  await request("DELETE", `/produtos/${id}`);
+  const eventos = await lista();
   assert.deepEqual(
-    (await lista()).data.notificacoes.find((n) => n.produtoId === id).campos,
-    ["inativado"],
+    eventos.map((n) => n.acao),
+    ["removido", "editado", "editado", "criado"],
   );
-  assert.equal((await request("DELETE", `/produtos/${id}`)).status, 204);
-  const notificacoes = (await lista()).data.notificacoes.filter(
-    (n) => n.produtoId === id,
+  assert.equal(new Set(eventos.map((n) => n.id)).size, 4);
+  assert.deepEqual(eventos[1].campos, ["inativado"]);
+  assert.deepEqual(eventos[2].campos, ["codigo", "descricao"]);
+  assert.equal(eventos[3].descricao, "Café");
+  assert.equal(eventos[2].descricao, "Café novo");
+  assert.deepEqual(eventos[3], inicial);
+  assert.ok(
+    eventos.every((n) => Date.parse(n.ocorreuEm) && n.origem === "web"),
   );
-  assert.equal(notificacoes.length, 1);
-  assert.equal(notificacoes[0].acao, "removido");
-  assert.equal(notificacoes[0].descricao, "Café novo");
-  assert.deepEqual(notificacoes[0].campos, []);
-  assert.ok(Date.parse(notificacoes[0].ocorreuEm));
+  assert.equal(
+    (await request("GET", "/notificacoes")).data.notificacoes.some(
+      (n) => n.produtoId === id,
+    ),
+    false,
+  );
 });
-test("leitura é independente por plataforma, isolada por conta e protegida por revisão", async () => {
-  const p = await seed("NOTIF-LEITURA");
+test("somente a plataforma de destino recebe e pode marcar os eventos; contas continuam isoladas", async () => {
+  const p = await seed("HIST-LEITURA");
   await request(
     "PATCH",
     `/produtos/${p.id}/status`,
@@ -740,6 +734,31 @@ test("leitura é independente por plataforma, isolada por conta e protegida por 
   assert.equal(evento.lida, false);
   assert.equal(evento.origem, "mobile");
   const corpo = { notificacoes: [{ id: evento.id, revisao: evento.revisao }] };
+  const propria = await request(
+    "GET",
+    "/notificacoes",
+    undefined,
+    true,
+    bearer,
+    "mobile",
+  );
+  assert.equal(
+    propria.data.notificacoes.some((n) => n.produtoId === p.id),
+    false,
+  );
+  assert.equal(
+    (
+      await request(
+        "PATCH",
+        "/notificacoes/lidas",
+        corpo,
+        true,
+        bearer,
+        "mobile",
+      )
+    ).data.afetadas,
+    0,
+  );
   assert.equal(
     (await request("PATCH", "/notificacoes/lidas", corpo, true, outroBearer))
       .data.afetadas,
@@ -761,26 +780,14 @@ test("leitura é independente por plataforma, isolada por conta e protegida por 
   );
   assert.equal(
     (await request("PATCH", "/notificacoes/lidas", corpo)).data.afetadas,
-    0,
-  );
-  const novo = (await request("GET", "/notificacoes")).data.notificacoes.find(
-    (n) => n.produtoId === p.id,
-  );
-  assert.equal(novo.lida, false);
-  assert.equal(
-    (
-      await request("PATCH", "/notificacoes/lidas", {
-        notificacoes: [{ id: novo.id, revisao: novo.revisao }],
-      })
-    ).data.afetadas,
     1,
   );
-  assert.equal(
-    (await request("GET", "/notificacoes")).data.notificacoes.find(
-      (n) => n.produtoId === p.id,
-    ).lida,
-    true,
-  );
+  const eventos = (
+    await request("GET", "/notificacoes")
+  ).data.notificacoes.filter((n) => n.produtoId === p.id);
+  assert.equal(eventos.length, 2);
+  assert.equal(eventos.find((n) => n.id === evento.id).lida, true);
+  assert.equal(eventos.find((n) => n.id !== evento.id).lida, false);
   assert.equal(
     (await request("GET", "/notificacoes", undefined, false)).status,
     401,
@@ -791,9 +798,61 @@ test("leitura é independente por plataforma, isolada por conta e protegida por 
     400,
   );
 });
-test("lote notifica somente alterações reais, exclusão substitui aviso e falha reverte ambos", async () => {
-  const p = await seed("NOTIF-LOTE");
-  const q = await seed("NOTIF-LOTE-INATIVO", "inativo");
+test("uma mesma conta com ações nos dois clientes só recebe a origem oposta, inclusive contagens", async () => {
+  const p = await seed("HIST-CRUZADO");
+  await request(
+    "PATCH",
+    `/produtos/${p.id}/status`,
+    undefined,
+    true,
+    bearer,
+    "web",
+  );
+  await request(
+    "PATCH",
+    `/produtos/${p.id}/status`,
+    undefined,
+    true,
+    bearer,
+    "mobile",
+  );
+  await request(
+    "PATCH",
+    `/produtos/${p.id}/status`,
+    undefined,
+    true,
+    bearer,
+    "web",
+  );
+  for (const origem of ["web", "mobile"]) {
+    const dados = (
+      await request("GET", "/notificacoes", undefined, true, bearer, origem)
+    ).data;
+    assert.ok(
+      dados.notificacoes.every(
+        (n) => n.origem === (origem === "web" ? "mobile" : "web"),
+      ),
+    );
+    const where = { usuarioId: 1, origem: origem === "web" ? "mobile" : "web" };
+    assert.equal(dados.total, await prisma.notificacao.count({ where }));
+    assert.equal(
+      dados.naoLidas,
+      await prisma.notificacao.count({
+        where: {
+          ...where,
+          [origem === "web" ? "lidaWeb" : "lidaMobile"]: false,
+        },
+      }),
+    );
+    assert.equal(
+      dados.notificacoes.filter((n) => n.produtoId === p.id).length,
+      origem === "web" ? 1 : 2,
+    );
+  }
+});
+test("lote registra eventos individuais, ignora no-op e falha reverte produto e evento", async () => {
+  const p = await seed("HIST-LOTE");
+  const q = await seed("HIST-LOTE-INATIVO", "inativo");
   await request("PATCH", "/produtos/status", {
     ids: [p.id, q.id],
     status: "inativo",
@@ -825,11 +884,14 @@ test("lote notifica somente alterações reais, exclusão substitui aviso e falh
     "inativo",
   );
   assert.equal(
-    (await prisma.notificacao.findFirst({ where: { produtoId: p.id } }))
-      .revisao,
+    await prisma.notificacao.count({ where: { produtoId: p.id } }),
     1,
   );
   await request("DELETE", "/produtos", { ids: [p.id, q.id] });
+  assert.equal(
+    await prisma.notificacao.count({ where: { produtoId: p.id } }),
+    2,
+  );
   assert.equal(
     await prisma.notificacao.count({
       where: { produtoId: { in: [p.id, q.id] }, acao: "removido" },
@@ -837,36 +899,100 @@ test("lote notifica somente alterações reais, exclusão substitui aviso e falh
     2,
   );
 });
-test("imagem: remoção gera campo imagem, repetição sem foto não cria outra revisão", async () => {
+test("imagem removida gera evento e repetição sem foto não gera duplicata", async () => {
   const p = await seed(
-    "NOTIF-FOTO",
+    "HIST-FOTO",
     "ativo",
     "https://res.cloudinary.com/demo/image/upload/v1/produtos/notif.png",
   );
-  assert.equal((await request("DELETE", `/produtos/${p.id}/foto`)).status, 200);
-  const n = await prisma.notificacao.findFirst({ where: { produtoId: p.id } });
-  assert.deepEqual(n.campos, ["imagem"]);
-  assert.equal((await request("DELETE", `/produtos/${p.id}/foto`)).status, 200);
+  await request("DELETE", `/produtos/${p.id}/foto`);
+  assert.deepEqual(
+    (await prisma.notificacao.findFirst({ where: { produtoId: p.id } })).campos,
+    ["imagem"],
+  );
+  await request("DELETE", `/produtos/${p.id}/foto`);
   assert.equal(
-    (await prisma.notificacao.findFirst({ where: { produtoId: p.id } }))
-      .revisao,
-    n.revisao,
+    await prisma.notificacao.count({ where: { produtoId: p.id } }),
+    1,
   );
 });
-test("notificações têm paginação completa, ordenação estável e validação de página/leitura", async () => {
-  const a = await request("GET", "/notificacoes?pagina=1");
-  assert.equal(a.status, 200);
-  assert.equal(a.data.notificacoes.length, 50);
-  assert.ok(a.data.paginas >= 2);
-  const b = await request("GET", "/notificacoes?pagina=2");
-  assert.equal(b.status, 200);
-  assert.equal(b.data.pagina, 2);
-  const ids = new Set(a.data.notificacoes.map((n) => n.id));
+test("origem desconhecida não produz notificações cruzadas nem expõe avisos legados sem origem", async () => {
+  const p = await seed("HIST-SEM-ORIGEM");
   assert.equal(
-    b.data.notificacoes.some((n) => ids.has(n.id)),
-    false,
+    (
+      await request(
+        "PATCH",
+        `/produtos/${p.id}/status`,
+        undefined,
+        true,
+        bearer,
+        "api",
+      )
+    ).status,
+    200,
   );
-  assert.equal((await request("GET", "/notificacoes?pagina=-1")).status, 400);
+  assert.equal(
+    await prisma.notificacao.count({ where: { produtoId: p.id } }),
+    0,
+  );
+  await prisma.notificacao.create({
+    data: {
+      usuarioId: 1,
+      produtoId: p.id,
+      codigo: p.codigo_produto,
+      descricao: p.descricao_produto,
+      acao: "editado",
+      campos: ["inativado"],
+      origem: "api",
+    },
+  });
+  for (const origem of ["web", "mobile"])
+    assert.equal(
+      (
+        await request("GET", "/notificacoes", undefined, true, bearer, origem)
+      ).data.notificacoes.some((n) => n.produtoId === p.id),
+      false,
+    );
+});
+test("paginação e totais contam apenas origem oposta e ordenam eventos por data e ID", async () => {
+  const token = jwt.sign({ id: 3 }, process.env.JWT_SECRET);
+  const instante = new Date("2026-11-17T12:00:00Z");
+  await prisma.notificacao.createMany({
+    data: Array.from({ length: 90 }, (_, i) => ({
+      usuarioId: 3,
+      produtoId: 999999,
+      codigo: "PAG",
+      descricao: "Histórico paginado",
+      acao: "editado",
+      campos: ["descricao"],
+      origem: i < 60 ? "mobile" : i < 80 ? "web" : "api",
+      ocorreuEm: instante,
+    })),
+  });
+  const get = (pagina) =>
+    request(
+      "GET",
+      `/notificacoes?pagina=${pagina}`,
+      undefined,
+      true,
+      token,
+      "web",
+    );
+  const a = await get(1);
+  const b = await get(2);
+  assert.equal(a.status, 200);
+  assert.equal(a.data.total, 60);
+  assert.equal(a.data.naoLidas, 60);
+  assert.equal(a.data.paginas, 2);
+  assert.equal(a.data.notificacoes.length, 50);
+  assert.equal(b.data.notificacoes.length, 10);
+  const ids = [...a.data.notificacoes, ...b.data.notificacoes].map((n) => n.id);
+  assert.equal(new Set(ids).size, 60);
+  assert.deepEqual(
+    ids,
+    ids.toSorted((a, b) => b - a),
+  );
+  assert.equal((await get(-1)).status, 400);
   assert.equal(
     (await request("PATCH", "/notificacoes/lidas", { notificacoes: [] }))
       .status,

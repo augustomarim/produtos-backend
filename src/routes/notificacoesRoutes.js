@@ -27,6 +27,8 @@ router.get("/", async (req, res) => {
   if (!campo) return;
   try {
     const usuarioId = req.usuario.id;
+    const origem = req.get("X-App-Origin") === "web" ? "mobile" : "web";
+    const destino = { usuarioId, origem };
     const paginaSolicitada = Number(req.query.pagina ?? 1);
     if (
       !Number.isInteger(paginaSolicitada) ||
@@ -36,17 +38,17 @@ router.get("/", async (req, res) => {
       return res.status(400).json({ error: "Página inválida." });
     const resultado = await prisma.$transaction(
       async (tx) => {
-        const total = await tx.notificacao.count({ where: { usuarioId } });
+        const total = await tx.notificacao.count({ where: destino });
         const paginas = Math.max(1, Math.ceil(total / 50));
         const pagina = Math.min(paginaSolicitada, paginas);
         const itens = await tx.notificacao.findMany({
-          where: { usuarioId },
+          where: destino,
           orderBy: [{ ocorreuEm: "desc" }, { id: "desc" }],
           take: 50,
           skip: (pagina - 1) * 50,
         });
         const naoLidas = await tx.notificacao.count({
-          where: { usuarioId, [campo]: false },
+          where: { ...destino, [campo]: false },
         });
         return {
           notificacoes: itens.map((n) => ({
@@ -85,6 +87,7 @@ router.patch("/lidas", async (req, res) => {
     const resultado = await prisma.notificacao.updateMany({
       where: {
         usuarioId: req.usuario.id,
+        origem: req.get("X-App-Origin") === "web" ? "mobile" : "web",
         OR: dados.notificacoes.map(({ id, revisao }) => ({ id, revisao })),
       },
       data: { [campo]: true },
